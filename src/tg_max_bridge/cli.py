@@ -36,6 +36,7 @@ def discover_max(
     limit: Annotated[int, typer.Option("--limit", min=1, max=100)] = 100,
 ) -> None:
     settings = MaxDiscoverySettings()  # type: ignore[call-arg]
+    _require_max_session(settings)
     asyncio.run(_discover_max(settings, query=query, limit=limit))
 
 
@@ -74,18 +75,7 @@ async def _init_db(settings: Settings) -> None:
 async def _doctor(settings: Settings) -> None:
     typer.echo("Checking environment...")
     await _init_db(settings)
-    session_dir = Path.home() / ".max-mcp"
-    session_db = session_dir / "session.db"
-    if not session_db.exists():
-        raise typer.BadParameter(
-            "MAX session is missing. Run: "
-            f"uv run --frozen --directory {settings.max_mcp_directory} "
-            "max-mcp-login login-qr or: "
-            f"uv run --frozen --directory {settings.max_mcp_directory} "
-            "max-mcp-login login-sms --phone +70000000000"
-        )
-    if not os.access(session_db, os.R_OK):
-        raise typer.BadParameter(f"MAX session is not readable: {session_db}")
+    _require_max_session(settings)
 
     transport = MaxTransport(settings)
     await transport.start()
@@ -96,6 +86,22 @@ async def _doctor(settings: Settings) -> None:
     title = _terminal_text(chat.get("title") or chat.get("name") or "(untitled)")
     typer.echo(f"MAX chat reachable: {settings.max_chat_id} {title}")
     typer.echo("Doctor passed without sending messages.")
+
+
+def _require_max_session(settings: MaxDiscoverySettings) -> Path:
+    session_dir = Path.home() / ".max-mcp"
+    session_db = session_dir / "session.db"
+    if not session_db.exists():
+        raise typer.BadParameter(
+            "MAX session is missing. Run: "
+            f"uv run --no-dev --frozen --directory {settings.max_mcp_directory} "
+            "max-mcp-login login-qr or: "
+            f"uv run --no-dev --frozen --directory {settings.max_mcp_directory} "
+            "max-mcp-login login-sms --phone +70000000000"
+        )
+    if not os.access(session_db, os.R_OK):
+        raise typer.BadParameter(f"MAX session is not readable: {session_db}")
+    return session_db
 
 
 async def _discover_max(
