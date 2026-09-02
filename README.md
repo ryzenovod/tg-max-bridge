@@ -148,12 +148,14 @@ SQLite сохраняет уже принятые задания между пе
 - отдельного системного пользователя `tg-max-bridge`;
 - данные и MAX-сессию в `/var/lib/tg-max-bridge`.
 
-Пример установки (репозитории клонируются обычным `git`, без GitHub-коннектора):
+Пример установки (репозитории клонируются обычным `git`, без GitHub-коннектора;
+для приватного bridge-репозитория на VPS заранее нужен deploy key или иной GitHub
+credential):
 
 ```bash
 sudo useradd --system --home /var/lib/tg-max-bridge \
   --create-home --shell /usr/sbin/nologin tg-max-bridge
-sudo git clone https://github.com/OWNER/tg-max-bridge.git /opt/tg-max-bridge
+sudo git clone https://github.com/ryzenovod/tg-max-bridge.git /opt/tg-max-bridge
 sudo git clone https://github.com/ryzenovod/max-mcp.git /opt/max-mcp
 sudo git -C /opt/max-mcp checkout e15dcf39c74948b57538fa2db52ca5c30af0e504
 sudo uv sync --directory /opt/tg-max-bridge --no-dev --frozen
