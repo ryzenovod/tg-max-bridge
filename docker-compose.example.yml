@@ -1,0 +1,24 @@
+services:
+  tg-max-bridge:
+    build: .
+    restart: unless-stopped
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    env_file:
+      - ${BRIDGE_ENV_FILE:-.env}
+    volumes:
+      - bridge-data:/app/data
+      - max-session:/home/app/.max-mcp
+    tmpfs:
+      - /tmp
+    environment:
+      MAX_MCP_DIRECTORY: /opt/max-mcp
+      SQLITE_PATH: /app/data/bridge.sqlite3
+    command: ["tg-max-bridge", "run"]
+
+volumes:
+  bridge-data:
+  max-session:

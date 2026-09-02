@@ -1,0 +1,38 @@
+[Unit]
+Description=Telegram to MAX reserve bridge
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=tg-max-bridge
+Group=tg-max-bridge
+UMask=0077
+WorkingDirectory=/opt/tg-max-bridge
+EnvironmentFile=/etc/tg-max-bridge.env
+Environment=HOME=/var/lib/tg-max-bridge
+ExecStart=/opt/tg-max-bridge/.venv/bin/tg-max-bridge run
+Restart=always
+RestartSec=5
+
+StateDirectory=tg-max-bridge
+StateDirectoryMode=0700
+
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+ReadWritePaths=/var/lib/tg-max-bridge
+ReadOnlyPaths=/opt/tg-max-bridge /opt/max-mcp
+
+[Install]
+WantedBy=multi-user.target

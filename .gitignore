@@ -1,0 +1,17 @@
+.env
+.venv/
+data/
+*.sqlite
+*.sqlite3
+*.db
+*.db-shm
+*.db-wal
+logs/
+*.log
+__pycache__/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/
+.DS_Store
+.max-mcp/
+.telegram-session/
