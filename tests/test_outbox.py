@@ -29,6 +29,36 @@ async def test_enqueue_is_idempotent_by_source_and_target(
 
 
 @pytest.mark.asyncio
+async def test_duplicate_enqueue_preserves_original_updated_at(
+    monkeypatch, tmp_path, sample_source, sample_payload
+):
+    from conftest import build_outbox_repository
+
+    from tg_max_bridge import outbox as outbox_module
+
+    repo, conn = await build_outbox_repository(tmp_path)
+    try:
+        monkeypatch.setattr(outbox_module, "now_ms", lambda: 1_000)
+        first = await repo.enqueue(sample_source, sample_payload)
+        monkeypatch.setattr(outbox_module, "now_ms", lambda: 99_000)
+        duplicate = await repo.enqueue(sample_source, sample_payload)
+
+        assert first.created is True
+        assert duplicate.created is False
+        assert duplicate.record.id == first.record.id
+        assert duplicate.record.updated_at == first.record.updated_at == 1_000
+
+        rows = await conn.execute_fetchall(
+            "SELECT created_at, updated_at FROM outbox WHERE id = ?",
+            (first.record.id,),
+        )
+        assert rows[0][0] == 1_000
+        assert rows[0][1] == 1_000
+    finally:
+        await conn.close()
+
+
+@pytest.mark.asyncio
 async def test_lease_due_marks_pending_rows_as_sending(
     tmp_path, sample_source, sample_payload, now_ms
 ):
@@ -188,6 +218,39 @@ async def test_lease_due_recovers_stale_sending_rows(
         )
         assert rows[0][0] == OutboxStatus.SENDING.value
         assert rows[0][1] == now_ms
+    finally:
+        await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_startup_recovery_moves_inflight_rows_to_ambiguous_for_reconciliation(
+    tmp_path, sample_source, sample_payload, now_ms
+):
+    from conftest import build_outbox_repository
+
+    from tg_max_bridge.models import OutboxStatus
+
+    repo, conn = await build_outbox_repository(tmp_path)
+    try:
+        await repo.enqueue(sample_source, sample_payload)
+        leased = await repo.lease_due(now_ms=now_ms, limit=1)
+
+        recovered = await repo.recover_stale_sending(now_ms=now_ms + 10_000)
+
+        assert recovered == 1
+        rows = await conn.execute_fetchall(
+            """
+            SELECT status, locked_at, next_attempt_at, last_error, updated_at
+            FROM outbox
+            WHERE id = ?
+            """,
+            (leased[0].id,),
+        )
+        assert rows[0][0] == OutboxStatus.AMBIGUOUS.value
+        assert rows[0][1] is None
+        assert rows[0][2] > now_ms + 10_000
+        assert "Recovered stale sending" in rows[0][3]
+        assert rows[0][4] == now_ms + 10_000
     finally:
         await conn.close()
 

@@ -44,6 +44,7 @@ async def test_transport_start_uses_configured_stdio_command(
         "run",
         "--no-dev",
         "--frozen",
+        "--no-sync",
         "--directory",
         "/opt/max-mcp",
         "max-mcp",
@@ -65,6 +66,7 @@ async def test_transport_subprocess_env_allows_only_specific_uv_vars(
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "secret")
     monkeypatch.setenv("UV_CACHE_DIR", "/tmp/uv-cache")
     monkeypatch.setenv("UV_TOOL_BIN_DIR", "/tmp/should-not-pass")
+    monkeypatch.setenv("MAX_MCP_SESSION_TARB64", "private-session-archive")
 
     captured = {}
     fake_session = FakeMcpSession(
@@ -94,6 +96,7 @@ async def test_transport_subprocess_env_allows_only_specific_uv_vars(
     assert env["UV_CACHE_DIR"] == "/tmp/uv-cache"
     assert "UV_TOOL_BIN_DIR" not in env
     assert "TELEGRAM_BOT_TOKEN" not in env
+    assert "MAX_MCP_SESSION_TARB64" not in env
 
 
 @pytest.mark.asyncio

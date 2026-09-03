@@ -4,5 +4,7 @@
 !pyproject.toml
 !uv.lock
 !README.md
+!scripts/
+!scripts/**
 !src/
 !src/**

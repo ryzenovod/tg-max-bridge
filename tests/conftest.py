@@ -32,9 +32,17 @@ def settings_factory(tmp_path):
     def build(**overrides: Any) -> SimpleNamespace:
         values = {
             "telegram_bot_token": "123:test-token",
+            "telegram_mode": "polling",
             "telegram_allowed_chat_ids": {-100111222333},
             "telegram_allowed_user_ids": {42},
+            "telegram_forward_marker": "#max",
             "telegram_bot_username": "reservebridgebot",
+            "telegram_webhook_url": None,
+            "telegram_webhook_secret": None,
+            "telegram_webhook_auto_register": True,
+            "telegram_webhook_listen_host": "0.0.0.0",
+            "telegram_webhook_max_bytes": 1_000_000,
+            "port": 8080,
             "max_chat_id": 777000,
             "max_mcp_directory": Path("/opt/max-mcp"),
             "max_mcp_command": "uv",
@@ -56,6 +64,7 @@ def settings_factory(tmp_path):
             "run",
             "--no-dev",
             "--frozen",
+            "--no-sync",
             "--directory",
             str(settings.max_mcp_directory),
             "max-mcp",
@@ -97,6 +106,10 @@ class FakeMessage:
         chat_type: str = "supergroup",
         from_user_id: int = 42,
         from_user_name: str = "Alice",
+        from_user_is_bot: bool = False,
+        sender_chat: Any | None = None,
+        author_signature: str | None = None,
+        has_protected_content: bool = False,
         message_id: int = 456,
         reply_to_message: FakeMessage | None = None,
     ) -> None:
@@ -110,7 +123,11 @@ class FakeMessage:
             id=from_user_id,
             full_name=from_user_name,
             username=from_user_name.lower(),
+            is_bot=from_user_is_bot,
         )
+        self.sender_chat = sender_chat
+        self.author_signature = author_signature
+        self.has_protected_content = has_protected_content
         self.reply_to_message = reply_to_message
 
 
@@ -264,12 +281,19 @@ def isolated_env(monkeypatch, tmp_path):
         "TELEGRAM_BOT_TOKEN",
         "TELEGRAM_ALLOWED_CHAT_IDS",
         "TELEGRAM_ALLOWED_USER_IDS",
+        "TELEGRAM_FORWARD_MARKER",
         "TELEGRAM_BOT_USERNAME",
         "MAX_CHAT_ID",
         "MAX_MCP_DIRECTORY",
         "MAX_MCP_COMMAND",
         "SQLITE_PATH",
         "TELEGRAM_ACK_MODE",
+        "TELEGRAM_MODE",
+        "TELEGRAM_WEBHOOK_URL",
+        "TELEGRAM_WEBHOOK_SECRET",
+        "TELEGRAM_WEBHOOK_AUTO_REGISTER",
+        "PORT",
+        "MAX_MCP_SESSION_TARB64",
     ]
     for key in keys:
         monkeypatch.delenv(key, raising=False)

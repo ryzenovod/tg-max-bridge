@@ -205,6 +205,7 @@ def _result_text(result: CallToolResult) -> str | None:
 
 def _subprocess_env() -> dict[str, str]:
     prefixes = ("LC_", "MAX_MCP_")
+    denied = {"MAX_MCP_SESSION_TARB64"}
     allowed = {
         "HOME",
         "PATH",
@@ -222,5 +223,5 @@ def _subprocess_env() -> dict[str, str]:
     return {
         key: value
         for key, value in os.environ.items()
-        if key in allowed or key.startswith(prefixes)
+        if key not in denied and (key in allowed or key.startswith(prefixes))
     }

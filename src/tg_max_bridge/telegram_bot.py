@@ -1,10 +1,17 @@
 from __future__ import annotations
 
+import re
 from datetime import UTC, datetime
 from typing import Any
 
 from telegram import Chat, Message, Update, User
-from telegram.ext import Application, CommandHandler, ContextTypes, filters
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    ContextTypes,
+    MessageHandler,
+    filters,
+)
 
 from .config import Settings
 from .formatting import UnsupportedMessageError, build_max_payload
@@ -23,23 +30,82 @@ def extract_trigger(
         return RejectReason("not_group", "Use /max inside the configured group.")
     if chat_id not in settings.telegram_allowed_chat_ids:
         return RejectReason("unauthorized_chat", "This Telegram chat is not allowed.")
+    inline_text = _inline_command_text(message, settings)
+    if inline_text is not None:
+        if _is_unattributed_bot_message(message):
+            return RejectReason("bot_loop", "Bot-authored messages are ignored.")
+        return _extract_source_message(
+            message,
+            chat_id,
+            message.message_id,
+            override_text=inline_text,
+        )
     if (
         message.from_user is None
         or message.from_user.id not in settings.telegram_allowed_user_ids
     ):
         return RejectReason("unauthorized_user", "This Telegram user is not allowed.")
     if not _is_max_command(message, settings):
-        return RejectReason("wrong_command", "Use /max as a reply to a message.")
+        return RejectReason(
+            "wrong_command", "Use /max as a reply to a message or write /max text."
+        )
     if message.reply_to_message is None:
-        return RejectReason("missing_reply", "Reply to a text message with /max.")
+        return RejectReason(
+            "missing_reply", "Reply to a text message with /max or write /max text."
+        )
 
     source = message.reply_to_message
+    return _extract_source_message(source, chat_id, message.message_id)
+
+
+def extract_marker_trigger(
+    update: Update, settings: Settings
+) -> TelegramSourceMessage | RejectReason:
+    message = update.effective_message
+    if message is None:
+        return RejectReason("no_message", "No Telegram message in update.")
+    chat_id = _chat_id(message)
+    if message.chat.type not in {"group", "supergroup"}:
+        return RejectReason("not_group", "Use the marker inside the configured group.")
+    if chat_id not in settings.telegram_allowed_chat_ids:
+        return RejectReason("unauthorized_chat", "This Telegram chat is not allowed.")
+    marker = settings.telegram_forward_marker
+    if marker is None:
+        return RejectReason(
+            "marker_disabled", "Telegram marker forwarding is disabled."
+        )
+    if _is_unattributed_bot_message(message):
+        return RejectReason("bot_loop", "Bot-authored marker messages are ignored.")
+    source_text = message.text or message.caption or ""
+    stripped_text = _strip_forward_marker(source_text, marker)
+    if stripped_text is None:
+        return RejectReason("missing_marker", f"Add {marker} to forward to MAX.")
+
+    return _extract_source_message(
+        message,
+        chat_id,
+        message.message_id,
+        override_text=stripped_text,
+    )
+
+
+def _extract_source_message(
+    source: Message,
+    chat_id: int,
+    trigger_message_id: int,
+    *,
+    override_text: str | None = None,
+) -> TelegramSourceMessage | RejectReason:
     if getattr(source, "has_protected_content", False):
         return RejectReason(
             "protected_content",
             "This protected Telegram message cannot be copied.",
         )
-    source_text = source.text or source.caption or ""
+    source_text = (
+        override_text
+        if override_text is not None
+        else source.text or source.caption or ""
+    )
     if not source_text.strip():
         return RejectReason(
             "unsupported_message", "Only text and captions are supported."
@@ -64,7 +130,7 @@ def extract_trigger(
     return TelegramSourceMessage(
         chat_id=chat_id,
         message_id=source.message_id,
-        trigger_message_id=message.message_id,
+        trigger_message_id=trigger_message_id,
         from_user_id=source_author_id,
         from_display_name=source_author_name,
         text=source_text,
@@ -107,13 +173,31 @@ def build_application(
             await _ack(update, settings, "Already queued for MAX.", is_error=False)
 
     chat_filter = filters.Chat(chat_id=list(settings.telegram_allowed_chat_ids))
-    user_filter = filters.User(user_id=list(settings.telegram_allowed_user_ids))
     application.add_handler(
         CommandHandler(
             "max",
             bridge_command,
-            filters=chat_filter & user_filter,
-            has_args=False,
+            filters=chat_filter,
+        )
+    )
+
+    async def bridge_marker(
+        update: Update,
+        _context: ContextTypes.DEFAULT_TYPE,
+    ) -> None:
+        source = extract_marker_trigger(update, settings)
+        if isinstance(source, RejectReason):
+            return
+        try:
+            payload = build_max_payload(source, settings.max_chat_id)
+        except UnsupportedMessageError:
+            return
+        await outbox.enqueue(source, payload)
+
+    application.add_handler(
+        MessageHandler(
+            chat_filter & (filters.TEXT | filters.CaptionRegex(".+")),
+            bridge_marker,
         )
     )
     return application
@@ -130,7 +214,23 @@ def _is_max_command(message: Message, settings: Settings) -> bool:
     if not command.startswith("/max@"):
         return False
     bot_username = settings.telegram_bot_username
-    return bot_username is None or command == f"/max@{bot_username}"
+    return bot_username is not None and command == f"/max@{bot_username}"
+
+
+def _inline_command_text(message: Message, settings: Settings) -> str | None:
+    text = message.text or ""
+    parts = text.split(maxsplit=1)
+    if len(parts) != 2:
+        return None
+    command = parts[0].casefold()
+    if command == "/max":
+        return parts[1].strip()
+    if not command.startswith("/max@"):
+        return None
+    bot_username = settings.telegram_bot_username
+    if bot_username is None or command != f"/max@{bot_username}":
+        return None
+    return parts[1].strip()
 
 
 def _display_name(user: User) -> str:
@@ -165,6 +265,50 @@ def _has_attachment(message: Message) -> bool:
             "voice",
         )
     )
+
+
+def _is_unattributed_bot_message(message: Message) -> bool:
+    return bool(
+        getattr(message.from_user, "is_bot", False)
+        and getattr(message, "sender_chat", None) is None
+    )
+
+
+def _strip_forward_marker(text: str, marker: str) -> str | None:
+    pattern = re.compile(rf"(?<!\S){re.escape(marker)}(?!\S)", flags=re.IGNORECASE)
+    matches = list(pattern.finditer(text))
+    if not matches:
+        return None
+    chunks: list[str] = []
+    position = 0
+    for match in matches:
+        start, end = match.span()
+        remove_start = start
+        remove_end = end
+        line_start = text.rfind("\n", 0, start) + 1
+        line_prefix = text[line_start:start]
+        if line_prefix.strip(" \t") == "":
+            while remove_end < len(text) and text[remove_end] in " \t":
+                remove_end += 1
+            if remove_end == len(text) or text[remove_end] == "\n":
+                remove_start = line_start
+                if remove_start == 0 and remove_end < len(text):
+                    remove_end += 1
+                elif (
+                    remove_start > position
+                    and remove_end < len(text)
+                    and text[remove_start - 1] == "\n"
+                    and text[remove_end] == "\n"
+                ):
+                    remove_end += 1
+        else:
+            while remove_end < len(text) and text[remove_end] in " \t":
+                remove_end += 1
+        chunks.append(text[position:remove_start])
+        position = remove_end
+    chunks.append(text[position:])
+    cleaned = "".join(chunks)
+    return cleaned.strip()
 
 
 async def _ack(

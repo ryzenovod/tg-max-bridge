@@ -8,6 +8,8 @@ from pathlib import Path
 
 import aiosqlite
 
+from tg_max_bridge.permissions import chmod_fd, chmod_path, owner_matches_current_user
+
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS outbox (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -42,7 +44,9 @@ async def connect(path: Path) -> aiosqlite.Connection:
     db = await aiosqlite.connect(path)
     try:
         db.row_factory = aiosqlite.Row
-        await db.execute("PRAGMA journal_mode=WAL")
+        # WAL is not safe on network filesystems. DELETE keeps the tiny, serialized
+        # bridge database compatible with Cloud.ru's Object Storage volume.
+        await db.execute("PRAGMA journal_mode=DELETE")
         await db.execute("PRAGMA foreign_keys=ON")
         await db.execute("PRAGMA busy_timeout=5000")
         _chmod_sqlite_files(path)
@@ -83,9 +87,9 @@ def _chmod_sqlite_files(path: Path) -> None:
             raise ValueError(f"SQLite file must not be a symlink: {candidate}")
         if not stat.S_ISREG(file_stat.st_mode):
             raise ValueError(f"SQLite path must be a regular file: {candidate}")
-        if hasattr(os, "geteuid") and file_stat.st_uid != os.geteuid():
+        if not owner_matches_current_user(file_stat.st_uid):
             raise PermissionError(f"SQLite file is not owned by this user: {candidate}")
-        os.chmod(candidate, 0o600, follow_symlinks=False)
+        chmod_path(candidate, 0o600, follow_symlinks=False)
 
 
 def _prepare_sqlite_path(path: Path) -> Path:
@@ -104,7 +108,7 @@ def _prepare_sqlite_path(path: Path) -> Path:
         _validate_existing_sqlite_file(path)
     else:
         try:
-            os.fchmod(descriptor, 0o600)
+            chmod_fd(descriptor, 0o600)
         finally:
             os.close(descriptor)
     return path
@@ -137,7 +141,7 @@ def _create_private_parent_directories(parent: Path) -> None:
         ):
             raise ValueError(f"SQLite parent must be a real directory: {directory}")
         if created:
-            os.chmod(directory, 0o700, follow_symlinks=False)
+            chmod_path(directory, 0o700, follow_symlinks=False)
 
 
 def _reject_symlink_components(path: Path) -> None:
@@ -163,9 +167,9 @@ def _validate_existing_sqlite_file(path: Path) -> None:
         raise ValueError(f"SQLite file must not be a symlink: {path}")
     if not stat.S_ISREG(file_stat.st_mode):
         raise ValueError(f"SQLite path must be a regular file: {path}")
-    if hasattr(os, "geteuid") and file_stat.st_uid != os.geteuid():
+    if not owner_matches_current_user(file_stat.st_uid):
         raise PermissionError(f"SQLite file is not owned by this user: {path}")
-    os.chmod(path, 0o600, follow_symlinks=False)
+    chmod_path(path, 0o600, follow_symlinks=False)
 
 
 @contextmanager

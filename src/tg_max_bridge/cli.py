@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 from pathlib import Path
 from typing import Annotated
@@ -13,9 +14,10 @@ from .db import connect, init_schema
 from .max_transport import MaxTransport
 from .models import OutboxStatus
 from .outbox import OutboxRepository
-from .service import run_service
+from .service import configure_logging, run_service
 
 app = typer.Typer(no_args_is_help=True)
+logger = logging.getLogger(__name__)
 
 
 @app.command("init-db")
@@ -46,7 +48,12 @@ def discover_telegram(
 ) -> None:
     """Show Telegram chat/user IDs from recent bot commands without consuming them."""
     settings = TelegramDiscoverySettings()  # type: ignore[call-arg]
-    asyncio.run(_discover_telegram(settings, limit=limit))
+    configure_logging(settings)
+    try:
+        asyncio.run(_discover_telegram(settings, limit=limit))
+    except Exception:
+        logger.exception("Telegram discovery stopped with an unhandled error")
+        raise typer.Exit(1) from None
 
 
 @app.command()
@@ -60,7 +67,12 @@ def outbox(
 @app.command()
 def run() -> None:
     settings = Settings()  # type: ignore[call-arg]
-    asyncio.run(run_service(settings))
+    configure_logging(settings)
+    try:
+        asyncio.run(run_service(settings))
+    except Exception:
+        logger.exception("Bridge stopped with an unhandled error")
+        raise typer.Exit(1) from None
 
 
 async def _init_db(settings: Settings) -> None:
@@ -141,6 +153,7 @@ async def _discover_telegram(
         token.get_secret_value() if hasattr(token, "get_secret_value") else str(token)
     )
     async with Bot(token=token_value) as bot:
+        me = await bot.get_me()
         updates = await bot.get_updates(
             limit=limit,
             timeout=0,
@@ -173,9 +186,11 @@ async def _discover_telegram(
         )
 
     if not shown:
+        username = _terminal_text(me.username) if me.username else None
+        command = f"/max@{username}" if username else "/max"
         typer.echo(
-            "No recent group commands found. Add the bot to the group, send /max, "
-            "then run this command again before starting the bridge."
+            "No recent group commands found. Add the bot to the group, send "
+            f"{command}, then run this command again before starting the bridge."
         )
 
 

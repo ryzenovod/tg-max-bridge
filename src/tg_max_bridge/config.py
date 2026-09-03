@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Annotated, Literal
+from urllib.parse import urlparse
 
-from pydantic import Field, SecretStr, field_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 SETTINGS_CONFIG = SettingsConfigDict(
@@ -29,6 +30,7 @@ class TelegramDiscoverySettings(BaseSettings):
     model_config = SETTINGS_CONFIG
 
     telegram_bot_token: SecretStr
+    log_level: str = "INFO"
 
     @field_validator("telegram_bot_token")
     @classmethod
@@ -55,6 +57,7 @@ class MaxDiscoverySettings(BaseSettings):
             "run",
             "--no-dev",
             "--frozen",
+            "--no-sync",
             "--directory",
             str(self.max_mcp_directory),
             "max-mcp",
@@ -65,13 +68,21 @@ class Settings(MaxDiscoverySettings):
     model_config = SETTINGS_CONFIG
 
     telegram_bot_token: SecretStr
+    telegram_mode: Literal["polling", "webhook"] = "polling"
     telegram_allowed_chat_ids: Annotated[set[int], NoDecode] = Field(
         default_factory=set
     )
     telegram_allowed_user_ids: Annotated[set[int], NoDecode] = Field(
         default_factory=set
     )
+    telegram_forward_marker: str | None = "#max"
     telegram_bot_username: str | None = None
+    telegram_webhook_url: str | None = None
+    telegram_webhook_secret: SecretStr | None = None
+    telegram_webhook_auto_register: bool = True
+    telegram_webhook_listen_host: str = "0.0.0.0"
+    port: int = Field(default=8080, alias="PORT")
+    telegram_webhook_max_bytes: int = 1_000_000
     max_chat_id: int
     sqlite_path: Path = Path("data/bridge.sqlite3")
     poll_timeout_seconds: int = 30
@@ -111,3 +122,73 @@ class Settings(MaxDiscoverySettings):
         if not value:
             return None
         return value.removeprefix("@").casefold()
+
+    @field_validator("telegram_forward_marker")
+    @classmethod
+    def normalize_forward_marker(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        return value or None
+
+    @field_validator("telegram_webhook_url")
+    @classmethod
+    def validate_webhook_url(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        parsed = urlparse(value)
+        if parsed.scheme != "https" or not parsed.netloc:
+            raise ValueError("TELEGRAM_WEBHOOK_URL must be an HTTPS URL")
+        return value
+
+    @field_validator("telegram_webhook_secret")
+    @classmethod
+    def validate_webhook_secret(cls, value: SecretStr | None) -> SecretStr | None:
+        if value is None:
+            return None
+        secret = value.get_secret_value()
+        allowed = set(
+            "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.-"
+        )
+        if not 32 <= len(secret) <= 256:
+            raise ValueError("TELEGRAM_WEBHOOK_SECRET must be 32-256 characters")
+        if any(character not in allowed for character in secret):
+            raise ValueError("TELEGRAM_WEBHOOK_SECRET contains invalid characters")
+        return value
+
+    @field_validator("port")
+    @classmethod
+    def validate_webhook_port(cls, value: int) -> int:
+        if not 1 <= value <= 65535:
+            raise ValueError("PORT must be between 1 and 65535")
+        return value
+
+    @field_validator("telegram_webhook_max_bytes")
+    @classmethod
+    def validate_webhook_max_bytes(cls, value: int) -> int:
+        if not 1024 <= value <= 10_000_000:
+            raise ValueError("TELEGRAM_WEBHOOK_MAX_BYTES must be 1024-10000000")
+        return value
+
+    @model_validator(mode="after")
+    def require_webhook_settings(self) -> Settings:
+        if self.telegram_mode != "webhook":
+            return self
+        missing = []
+        if self.telegram_webhook_url is None:
+            missing.append("TELEGRAM_WEBHOOK_URL")
+        if self.telegram_webhook_secret is None:
+            missing.append("TELEGRAM_WEBHOOK_SECRET")
+        if missing:
+            names = " and ".join(missing)
+            raise ValueError(f"{names} required in webhook mode")
+        if (
+            not self.telegram_webhook_auto_register
+            and self.telegram_ack_mode != "never"
+        ):
+            raise ValueError(
+                "TELEGRAM_ACK_MODE=never required when "
+                "TELEGRAM_WEBHOOK_AUTO_REGISTER=false"
+            )
+        return self

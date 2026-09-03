@@ -45,12 +45,21 @@ class Dispatcher:
         finally:
             await self._transport.stop()
 
-    async def process_once(self, *, now_ms: int | None = None) -> int:
-        current = now_ms if now_ms is not None else current_time_ms()
-        records = await self._outbox.lease_due(now_ms=current, limit=10)
-        for record in records:
-            await self._process_record(record, current)
-        return len(records)
+    async def process_once(
+        self,
+        *,
+        now_ms: int | None = None,
+        close_transport: bool = False,
+    ) -> int:
+        try:
+            current = now_ms if now_ms is not None else current_time_ms()
+            records = await self._outbox.lease_due(now_ms=current, limit=10)
+            for record in records:
+                await self._process_record(record, current)
+            return len(records)
+        finally:
+            if close_transport:
+                await self._transport.stop()
 
     async def _process_record(self, record: OutboxRecord, now_ms: int) -> None:
         if record.status is OutboxStatus.AMBIGUOUS:
