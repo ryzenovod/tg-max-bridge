@@ -209,3 +209,70 @@ docker compose -f docker-compose.example.yml up -d
 
 Не запускайте одновременно локальную, systemd- и Docker-копии с одной и той же
 Telegram-конфигурацией: два long-polling процесса будут конкурировать за updates.
+
+## Cloud.ru Container Apps
+
+Для Cloud.ru добавлен отдельный webhook-режим. Он не держит контейнер горячим:
+Telegram будит публичный HTTPS endpoint только при новом update, контейнер
+обрабатывает одну команду `/max`, синхронно делает один проход доставки в MAX и
+возвращает Telegram успех только после состояния `sent` в outbox. Если MAX
+временно недоступен или доставка неоднозначна, endpoint отвечает `503`, чтобы
+Telegram повторил запрос позже.
+
+Минимальные настройки контейнерного приложения:
+
+- образ из приватного registry;
+- публичный HTTPS endpoint, порт `8080`;
+- `min_instances=0`, `max_instances=1`;
+- приватный volume, смонтированный в `/state`;
+- env `SQLITE_PATH=/state/bridge.sqlite3` и `HOME=/state/home`;
+- health probe `GET /healthz`.
+
+Cloud.ru рекомендует SQLite на Object Storage только для небольшой/test-нагрузки.
+Для этого моста с одной группой используется rollback-journal `DELETE`, ровно
+один экземпляр и сериализованные записи. Для нескольких групп или интенсивного
+потока нужна отдельная PostgreSQL, а не увеличение числа экземпляров.
+
+Webhook-переменные:
+
+```dotenv
+TELEGRAM_MODE=webhook
+TELEGRAM_WEBHOOK_URL=https://service-name.containerapps.ru/telegram/webhook
+TELEGRAM_WEBHOOK_SECRET=replace-with-random-allowed-token
+PORT=8080
+SQLITE_PATH=/state/bridge.sqlite3
+HOME=/state/home
+```
+
+Webhook secret передаётся Telegram как
+`X-Telegram-Bot-Api-Secret-Token`; допускаются только латинские буквы, цифры,
+`_`, `.` и `-`, длина 1–256 символов. URL должен быть HTTPS.
+
+MAX-сессию в облаке не кладите в образ. Сделайте локально gzip-tar только из
+ожидаемых файлов сессии и положите результат в secret env
+`MAX_MCP_SESSION_TARB64`:
+
+```bash
+tar -C "$HOME" -czf - \
+  .max-mcp/session.db .max-mcp/session.kind .max-mcp/session.phone \
+  | base64 | tr -d '\n'
+```
+
+Если какого-то metadata-файла нет, уберите только его из команды; файл
+`session.db` обязателен. При
+старте entrypoint безопасно распакует seed только один раз, только в
+`~/.max-mcp`, не перезаписывая уже существующую persistent-сессию, выставит права
+`0700/0600` и удалит `MAX_MCP_SESSION_TARB64` из окружения перед запуском моста.
+
+Перед установкой cloud webhook остановите локальный LaunchAgent, иначе локальный
+polling и webhook будут конкурировать за Telegram updates:
+
+```bash
+launchctl unload "$HOME/Library/LaunchAgents/com.ryzenovod.tg-max-bridge.plist"
+```
+
+Откат: удалите webhook у Telegram Bot API и снова загрузите LaunchAgent:
+
+```bash
+launchctl load "$HOME/Library/LaunchAgents/com.ryzenovod.tg-max-bridge.plist"
+```

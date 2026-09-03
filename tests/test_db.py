@@ -15,6 +15,10 @@ async def test_connect_restricts_sqlite_directory_and_file_permissions(tmp_path)
     db = await connect(sqlite_path)
     try:
         await init_schema(db)
+        async with db.execute("PRAGMA journal_mode") as cursor:
+            row = await cursor.fetchone()
+        assert row is not None
+        assert row[0] == "delete"
     finally:
         await db.close()
 

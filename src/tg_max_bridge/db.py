@@ -42,7 +42,9 @@ async def connect(path: Path) -> aiosqlite.Connection:
     db = await aiosqlite.connect(path)
     try:
         db.row_factory = aiosqlite.Row
-        await db.execute("PRAGMA journal_mode=WAL")
+        # WAL is not safe on network filesystems. DELETE keeps the tiny, serialized
+        # bridge database compatible with Cloud.ru's Object Storage volume.
+        await db.execute("PRAGMA journal_mode=DELETE")
         await db.execute("PRAGMA foreign_keys=ON")
         await db.execute("PRAGMA busy_timeout=5000")
         _chmod_sqlite_files(path)

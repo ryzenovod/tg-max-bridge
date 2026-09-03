@@ -1,4 +1,4 @@
-FROM ghcr.io/astral-sh/uv:python3.13-bookworm-slim
+FROM ghcr.io/astral-sh/uv:python3.13-bookworm-slim@sha256:531f855bda2c73cd6ef67d56b733b357cea384185b3022bd09f05e002cd144ca
 
 ARG MAX_MCP_REPO=https://github.com/ryzenovod/max-mcp.git
 ARG MAX_MCP_COMMIT=b2922b9314056947c60d774cb0bfd48b99a6fc3c
@@ -24,7 +24,7 @@ RUN git init /opt/max-mcp \
     && apt-get purge -y --auto-remove git \
     && rm -rf /var/lib/apt/lists/*
 
-RUN useradd --create-home --uid 10001 app \
+RUN useradd --create-home --uid 1000 app \
     && mkdir -p /app/data /home/app/.max-mcp \
     && chmod +x /app/scripts/docker-entrypoint.sh \
     && chown -R app:app /app /home/app
@@ -33,6 +33,9 @@ ENV PATH="/app/.venv/bin:${PATH}"
 ENV MAX_MCP_DIRECTORY=/opt/max-mcp
 ENV HOME=/home/app
 ENV UV_CACHE_DIR=/tmp/uv-cache
+ENV PORT=8080
+
+EXPOSE 8080
 
 USER app
 

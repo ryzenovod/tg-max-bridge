@@ -91,21 +91,6 @@ class OutboxRepository:
                     ),
                 )
                 created = cursor.rowcount == 1
-                if not created:
-                    await self._db.execute(
-                        """
-                        UPDATE outbox
-                        SET updated_at = ?
-                        WHERE tg_chat_id = ? AND tg_message_id = ?
-                          AND max_chat_id = ?
-                        """,
-                        (
-                            current,
-                            source.chat_id,
-                            source.message_id,
-                            payload.chat_id,
-                        ),
-                    )
             record = await self._get_by_source_unlocked(
                 source.chat_id,
                 source.message_id,

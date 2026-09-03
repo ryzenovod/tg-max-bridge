@@ -270,6 +270,11 @@ def isolated_env(monkeypatch, tmp_path):
         "MAX_MCP_COMMAND",
         "SQLITE_PATH",
         "TELEGRAM_ACK_MODE",
+        "TELEGRAM_MODE",
+        "TELEGRAM_WEBHOOK_URL",
+        "TELEGRAM_WEBHOOK_SECRET",
+        "PORT",
+        "MAX_MCP_SESSION_TARB64",
     ]
     for key in keys:
         monkeypatch.delenv(key, raising=False)

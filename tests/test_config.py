@@ -123,3 +123,98 @@ def test_telegram_discovery_rejects_empty_token(monkeypatch, isolated_env):
 
     with pytest.raises(ValidationError, match="must not be empty"):
         TelegramDiscoverySettings(_env_file=None)
+
+
+def test_settings_defaults_to_polling_mode(isolated_env):
+    from tg_max_bridge.config import Settings
+
+    settings = Settings(_env_file=None)
+
+    assert settings.telegram_mode == "polling"
+    assert settings.telegram_webhook_url is None
+    assert settings.telegram_webhook_secret is None
+
+
+def test_polling_mode_ignores_missing_webhook_settings(isolated_env):
+    from tg_max_bridge.config import Settings
+
+    settings = Settings(_env_file=None)
+
+    assert settings.telegram_mode == "polling"
+
+
+def test_webhook_mode_requires_url_and_secret(monkeypatch, isolated_env):
+    from pydantic import ValidationError
+
+    from tg_max_bridge.config import Settings
+
+    monkeypatch.setenv("TELEGRAM_MODE", "webhook")
+
+    with pytest.raises(ValidationError) as exc_info:
+        Settings(_env_file=None)
+
+    message = str(exc_info.value)
+    assert "TELEGRAM_WEBHOOK_URL" in message
+    assert "TELEGRAM_WEBHOOK_SECRET" in message
+
+
+def test_webhook_mode_accepts_valid_cloud_settings(monkeypatch, isolated_env):
+    from tg_max_bridge.config import Settings
+
+    monkeypatch.setenv("TELEGRAM_MODE", "webhook")
+    monkeypatch.setenv(
+        "TELEGRAM_WEBHOOK_URL",
+        "https://reserve-bridge.containerapps.ru/telegram/webhook",
+    )
+    monkeypatch.setenv("TELEGRAM_WEBHOOK_SECRET", "Az_09-secret.token")
+    monkeypatch.setenv("PORT", "8080")
+
+    settings = Settings(_env_file=None)
+
+    assert settings.telegram_mode == "webhook"
+    assert str(settings.telegram_webhook_url) == (
+        "https://reserve-bridge.containerapps.ru/telegram/webhook"
+    )
+    assert settings.telegram_webhook_secret.get_secret_value() == "Az_09-secret.token"
+    assert settings.port == 8080
+
+
+@pytest.mark.parametrize(
+    "secret",
+    [
+        "",
+        "has space",
+        "кириллица",
+        "slash/not-allowed",
+        "x" * 257,
+    ],
+)
+def test_webhook_secret_uses_telegram_allowed_charset(
+    monkeypatch, isolated_env, secret
+):
+    from pydantic import ValidationError
+
+    from tg_max_bridge.config import Settings
+
+    monkeypatch.setenv("TELEGRAM_MODE", "webhook")
+    monkeypatch.setenv(
+        "TELEGRAM_WEBHOOK_URL",
+        "https://reserve-bridge.containerapps.ru/telegram/webhook",
+    )
+    monkeypatch.setenv("TELEGRAM_WEBHOOK_SECRET", secret)
+
+    with pytest.raises(ValidationError, match="TELEGRAM_WEBHOOK_SECRET"):
+        Settings(_env_file=None)
+
+
+def test_webhook_url_must_be_https(monkeypatch, isolated_env):
+    from pydantic import ValidationError
+
+    from tg_max_bridge.config import Settings
+
+    monkeypatch.setenv("TELEGRAM_MODE", "webhook")
+    monkeypatch.setenv("TELEGRAM_WEBHOOK_URL", "http://localhost:8080/hook")
+    monkeypatch.setenv("TELEGRAM_WEBHOOK_SECRET", "valid_secret")
+
+    with pytest.raises(ValidationError, match="TELEGRAM_WEBHOOK_URL"):
+        Settings(_env_file=None)

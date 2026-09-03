@@ -179,8 +179,9 @@ def test_operator_docs_and_examples_do_not_contain_real_secrets_or_sessions():
     for path in checked:
         text = path.read_text(encoding="utf-8")
         assert not re.search(r"\b\d{8,12}:[A-Za-z0-9_-]{30,}\b", text), path
-        assert "session.db" not in text, path
         assert "MAX_CHAT_ID=123456789" not in text or path.name == ".env.example"
+
+    assert not list(root.rglob("session.db"))
 
 
 def test_run_command_logs_sanitized_exception_without_reraising_raw_traceback(

@@ -13,6 +13,7 @@ from .max_transport import MaxTransport
 from .outbox import OutboxRepository
 from .outbox import now_ms as current_time_ms
 from .telegram_bot import build_application
+from .webhook import run_webhook
 
 logger = logging.getLogger(__name__)
 _BASE_LOG_RECORD_FACTORY = logging.getLogRecordFactory()
@@ -180,8 +181,9 @@ async def run_service(settings: Settings) -> None:
     configure_logging(settings)
     db = await connect(settings.sqlite_path)
     dispatcher: Dispatcher | None = None
+    transport: MaxTransport | None = None
     stop_event: asyncio.Event | None = None
-    polling_task: asyncio.Task[None] | None = None
+    telegram_task: asyncio.Task[None] | None = None
     dispatcher_task: asyncio.Task[None] | None = None
     loop = asyncio.get_running_loop()
     installed_signal_handlers: list[signal.Signals] = []
@@ -198,7 +200,8 @@ async def run_service(settings: Settings) -> None:
         recovered = await outbox.recover_stale_sending(now_ms=current_time_ms())
         if recovered:
             logger.warning("Recovered %s stale sending outbox row(s)", recovered)
-        dispatcher = Dispatcher(outbox, MaxTransport(settings), settings)
+        transport = MaxTransport(settings)
+        dispatcher = Dispatcher(outbox, transport, settings)
         application = build_application(settings, outbox)
         stop_event = asyncio.Event()
         for sig in (signal.SIGINT, signal.SIGTERM):
@@ -208,17 +211,26 @@ async def run_service(settings: Settings) -> None:
                 continue
             installed_signal_handlers.append(sig)
 
-        polling_task = asyncio.create_task(
-            _run_polling(application, settings, stop_event),
-            name="telegram-polling",
-        )
-        dispatcher_task = asyncio.create_task(
-            dispatcher.run_until_stopped(),
-            name="max-dispatcher",
-        )
+        if getattr(settings, "telegram_mode", "polling") == "webhook":
+            telegram_task = asyncio.create_task(
+                run_webhook(application, dispatcher, outbox, settings, stop_event),
+                name="telegram-webhook",
+            )
+        else:
+            telegram_task = asyncio.create_task(
+                _run_polling(application, settings, stop_event),
+                name="telegram-polling",
+            )
+            dispatcher_task = asyncio.create_task(
+                dispatcher.run_until_stopped(),
+                name="max-dispatcher",
+            )
         await asyncio.sleep(0)
+        tasks_to_watch = {telegram_task}
+        if dispatcher_task is not None:
+            tasks_to_watch.add(dispatcher_task)
         done, _pending = await asyncio.wait(
-            {polling_task, dispatcher_task},
+            tasks_to_watch,
             return_when=asyncio.FIRST_COMPLETED,
         )
         error = _first_task_error(done)
@@ -226,19 +238,21 @@ async def run_service(settings: Settings) -> None:
             raise error
         if dispatcher_task in done and not stop_event.is_set():
             raise RuntimeError("Dispatcher stopped unexpectedly")
-        if polling_task in done and not stop_event.is_set():
-            raise RuntimeError("Telegram polling stopped unexpectedly")
+        if telegram_task in done and not stop_event.is_set():
+            raise RuntimeError("Telegram runtime stopped unexpectedly")
     finally:
         if dispatcher is not None:
             dispatcher.stop()
         if stop_event is not None:
             stop_event.set()
-        tasks = [task for task in (polling_task, dispatcher_task) if task is not None]
+        tasks = [task for task in (telegram_task, dispatcher_task) if task is not None]
         for task in tasks:
             if not task.done():
                 task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+        if transport is not None:
+            await transport.stop()
         for sig in installed_signal_handlers:
             loop.remove_signal_handler(sig)
         await db.close()
