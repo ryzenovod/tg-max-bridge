@@ -223,6 +223,39 @@ async def test_lease_due_recovers_stale_sending_rows(
 
 
 @pytest.mark.asyncio
+async def test_startup_recovery_moves_inflight_rows_to_ambiguous_for_reconciliation(
+    tmp_path, sample_source, sample_payload, now_ms
+):
+    from conftest import build_outbox_repository
+
+    from tg_max_bridge.models import OutboxStatus
+
+    repo, conn = await build_outbox_repository(tmp_path)
+    try:
+        await repo.enqueue(sample_source, sample_payload)
+        leased = await repo.lease_due(now_ms=now_ms, limit=1)
+
+        recovered = await repo.recover_stale_sending(now_ms=now_ms + 10_000)
+
+        assert recovered == 1
+        rows = await conn.execute_fetchall(
+            """
+            SELECT status, locked_at, next_attempt_at, last_error, updated_at
+            FROM outbox
+            WHERE id = ?
+            """,
+            (leased[0].id,),
+        )
+        assert rows[0][0] == OutboxStatus.AMBIGUOUS.value
+        assert rows[0][1] is None
+        assert rows[0][2] > now_ms + 10_000
+        assert "Recovered stale sending" in rows[0][3]
+        assert rows[0][4] == now_ms + 10_000
+    finally:
+        await conn.close()
+
+
+@pytest.mark.asyncio
 async def test_concurrent_repository_transactions_are_serialized(
     tmp_path, sample_source, sample_payload
 ):

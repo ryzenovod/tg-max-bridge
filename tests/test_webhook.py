@@ -84,6 +84,19 @@ class FakeDispatcher:
             self.running -= 1
 
 
+class BlockingDispatcher:
+    def __init__(self) -> None:
+        self.entered = asyncio.Event()
+        self.release = asyncio.Event()
+        self.calls = 0
+
+    async def process_once(self, *, close_transport: bool = False) -> int:
+        self.calls += 1
+        self.entered.set()
+        await self.release.wait()
+        return 1
+
+
 class FakeOutbox:
     def __init__(self, *, statuses: list[str]) -> None:
         self.statuses = statuses
@@ -283,25 +296,57 @@ async def test_webhook_rejects_oversized_body(settings_factory):
 
 
 @pytest.mark.asyncio
-async def test_webhook_accepted_update_returns_2xx_only_after_sent(settings_factory):
+async def test_webhook_accepted_update_returns_fast_retryable_without_dispatch_wait(
+    settings_factory,
+):
+    from tg_max_bridge.webhook import TelegramWebhook
+
+    dispatcher = BlockingDispatcher()
+    outbox = RecordingOutbox(status="pending")
+    webhook = TelegramWebhook(
+        settings=_settings(
+            settings_factory,
+            telegram_webhook_auto_register=False,
+            telegram_ack_mode="never",
+        ),
+        application=None,
+        dispatcher=dispatcher,
+        outbox=outbox,
+        max_body_size=1024,
+    )
+
+    response = await asyncio.wait_for(
+        webhook.handle_update(FakeRequest(body=_accepted_update())),
+        timeout=0.05,
+    )
+
+    assert response.status == 503
+    assert dispatcher.calls == 0
+    assert len(outbox.enqueued) == 1
+
+
+@pytest.mark.asyncio
+async def test_webhook_already_sent_update_returns_2xx(settings_factory):
     webhook, dispatcher = _webhook(settings_factory, statuses=["sent"])
 
     response = await webhook.handle_update(FakeRequest(body=_accepted_update()))
 
     assert 200 <= response.status < 300
-    assert dispatcher.calls == 1
-    assert dispatcher.close_transport_flags == [True]
+    assert dispatcher.calls == 0
+    assert dispatcher.close_transport_flags == []
 
 
 @pytest.mark.parametrize("status", ["pending", "ambiguous"])
 @pytest.mark.asyncio
-async def test_webhook_retryable_outbox_state_returns_503(settings_factory, status):
+async def test_webhook_retryable_outbox_state_returns_fast_503_without_dispatch(
+    settings_factory, status
+):
     webhook, dispatcher = _webhook(settings_factory, statuses=[status])
 
     response = await webhook.handle_update(FakeRequest(body=_accepted_update()))
 
     assert response.status == 503
-    assert dispatcher.calls == 1
+    assert dispatcher.calls == 0
 
 
 @pytest.mark.asyncio
@@ -315,7 +360,7 @@ async def test_webhook_irrelevant_update_returns_2xx_without_dispatch(settings_f
 
 
 @pytest.mark.asyncio
-async def test_webhook_serializes_dispatcher_runs(settings_factory):
+async def test_concurrent_webhooks_do_not_dispatch_in_request_path(settings_factory):
     webhook, dispatcher = _webhook(settings_factory, statuses=["sent"])
 
     responses = await asyncio.gather(
@@ -324,8 +369,8 @@ async def test_webhook_serializes_dispatcher_runs(settings_factory):
     )
 
     assert [response.status for response in responses] == [200, 200]
-    assert dispatcher.calls == 2
-    assert dispatcher.max_running == 1
+    assert dispatcher.calls == 0
+    assert dispatcher.max_running == 0
 
 
 @pytest.mark.asyncio
@@ -382,7 +427,7 @@ async def test_webhook_direct_receiver_enqueues_without_telegram_application(
     response = await webhook.handle_update(FakeRequest(body=_accepted_update()))
 
     assert response.status == expected_status
-    assert dispatcher.calls == 1
+    assert dispatcher.calls == 0
     assert len(outbox.enqueued) == 1
     source, payload = outbox.enqueued[0]
     assert source.chat_id == -100111222333
@@ -413,7 +458,7 @@ async def test_webhook_direct_receiver_accepts_inline_command_without_applicatio
     response = await webhook.handle_update(FakeRequest(body=_inline_command_update()))
 
     assert response.status == 200
-    assert dispatcher.calls == 1
+    assert dispatcher.calls == 0
     source, payload = outbox.enqueued[0]
     assert source.message_id == 457
     assert source.trigger_message_id == 457
@@ -444,7 +489,7 @@ async def test_webhook_direct_receiver_accepts_marker_without_application(
     response = await webhook.handle_update(FakeRequest(body=_marker_update()))
 
     assert response.status == 200
-    assert dispatcher.calls == 1
+    assert dispatcher.calls == 0
     source, payload = outbox.enqueued[0]
     assert source.message_id == 790
     assert source.text == "Meet at entrance B"
@@ -476,6 +521,51 @@ async def test_webhook_direct_receiver_dedupes_through_outbox(settings_factory):
     assert [first.status, second.status] == [200, 200]
     assert [item[0].message_id for item in outbox.enqueued] == [123, 123]
     assert len(outbox.seen) == 1
+    assert dispatcher.calls == 0
+
+
+@pytest.mark.asyncio
+async def test_webhook_repeated_delivery_is_deduped_in_persistent_outbox(
+    settings_factory,
+    tmp_path,
+):
+    from conftest import build_outbox_repository
+
+    from tg_max_bridge.webhook import TelegramWebhook
+
+    outbox, conn = await build_outbox_repository(tmp_path)
+    dispatcher = FakeDispatcher(statuses=["pending"])
+    webhook = TelegramWebhook(
+        settings=_settings(
+            settings_factory,
+            telegram_webhook_auto_register=False,
+            telegram_ack_mode="never",
+        ),
+        application=None,
+        dispatcher=dispatcher,
+        outbox=outbox,
+        max_body_size=1024,
+    )
+    try:
+        first = await webhook.handle_update(FakeRequest(body=_accepted_update()))
+        second = await webhook.handle_update(FakeRequest(body=_accepted_update()))
+
+        rows = await conn.execute_fetchall(
+            """
+            SELECT tg_chat_id, tg_message_id, tg_trigger_message_id, status
+            FROM outbox
+            """
+        )
+
+        assert [first.status, second.status] == [503, 503]
+        assert len(rows) == 1
+        assert rows[0]["tg_chat_id"] == -100111222333
+        assert rows[0]["tg_message_id"] == 123
+        assert rows[0]["tg_trigger_message_id"] == 456
+        assert rows[0]["status"] == "pending"
+        assert dispatcher.calls == 0
+    finally:
+        await conn.close()
 
 
 @pytest.mark.asyncio

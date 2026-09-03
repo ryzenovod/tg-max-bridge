@@ -1,74 +1,81 @@
 ## Approach
 
-Keep the deployed bridge architecture unchanged: Telegram webhook/polling accepts explicit forwarding triggers, writes the source message to the existing SQLite outbox, and lets the existing dispatcher deliver to MAX with marker-based idempotency. The required user behavior is: reply `/max` still forwards the replied message; `/max <text>` forwards the command message itself; a standalone case-insensitive `#max` token in normal text or a media caption forwards that same message with only the marker removed. For the class-group context, marker forwarding is authorized by configured Telegram chat only, not by `TELEGRAM_ALLOWED_USER_IDS`; the reply command remains user-restricted because it can copy someone else's message.
+Decouple Telegram webhook latency from MAX delivery, but keep Telegram as the scale-to-zero wake source until delivery is confirmed. A valid `/max` or `#max` webhook must authenticate, parse, validate, build the MAX payload, and durably enqueue/idempotently load the SQLite outbox row before returning. The handler must not call MAX or wait for `Dispatcher.process_once()`. Instead, `run_service()` must run the existing dispatcher loop in webhook mode as the in-process delivery worker. Return `200` only for irrelevant updates, invalid-but-non-retryable content, and accepted rows already marked `sent`; return a fast `503` for accepted rows in `pending`, `sending`, or `ambiguous` so Telegram retries later and wakes a scaled-to-zero app until the durable outbox reaches `sent`. This preserves at-least-once delivery, existing dedupe markers, and recovery from restarts without requiring `min_instances=1`.
 
 ## Change list
 
-- `src/tg_max_bridge/config.py` — keep `telegram_forward_marker: str | None = "#max"`; normalize empty/whitespace env values to `None` so marker forwarding can be disabled with `TELEGRAM_FORWARD_MARKER=`.
-- `src/tg_max_bridge/telegram_bot.py` — retain the current `49e5b9a` split between `extract_trigger()` and `extract_marker_trigger()`, but fix marker stripping to use a standalone-token parser rather than `split()`, preserving internal whitespace/newlines. Keep `/max` reply compatibility, `/max <text>`, and `/max@BotUsername <text>`. Add loop protection for marker messages from bot accounts when there is no `sender_chat`, while still allowing anonymous admin/channel-style messages with `sender_chat`. Keep the marker handler chat-filtered and not user-filtered.
-- `src/tg_max_bridge/webhook.py` — keep `_accepted_source()` trying command extraction first and marker extraction second so polling and direct webhook mode accept the same messages.
-- `tests/test_telegram_bot.py` — cover reply command compatibility, inline command text, addressed command text, marker in text/caption, case-insensitive marker, multiline preservation, non-standalone marker rejection, empty-after-marker rejection, protected content, unconfigured/private chat rejection, marker from any human user in allowed chat, and bot-without-`sender_chat` rejection.
-- `tests/test_webhook.py` — cover direct webhook receiver accepting both `/max <text>` and `#max`, preserving existing outbox/dedupe and 2xx/503 semantics.
-- `tests/conftest.py` — extend fakes only as needed for `is_bot`, `sender_chat`, protected content, text, and caption.
-- `README.md` and `.env.example` — document `TELEGRAM_FORWARD_MARKER=#max`, empty value disables marker forwarding, `/max <text>` works, marker forwarding is chat-authorized, and MAX receives the body without the marker. Preserve unrelated local edits in `.env.example`.
+- `src/tg_max_bridge/service.py` — start `dispatcher.run_until_stopped()` in webhook mode as well as polling mode. Keep `max_instances=1` as the deployment assumption for SQLite safety. On shutdown, keep the current ordering: call `dispatcher.stop()`, set the shared stop event, cancel runtime tasks, gather them, stop the transport, remove signal handlers, and close SQLite. This makes webhook mode a web server plus local outbox worker instead of using Telegram request handlers as the worker.
+- `src/tg_max_bridge/webhook.py` — remove synchronous dispatch from `TelegramWebhook.handle_update()`: no delivery lock, no `dispatcher.process_once(close_transport=True)`, and no MAX transport start/stop from the request path. After direct enqueue or PTB processing, read the outbox row by source and return `200` only if it is `sent`; return `503` for every other accepted durable state. Keep malformed/oversized/unauthorized request responses unchanged, and keep irrelevant updates `200`.
+- `src/tg_max_bridge/dispatcher.py` — preserve existing `process_once()` and `run_until_stopped()` contracts. Do not add speculative queues or a second persistence layer. If implementation touches cancellation handling, keep cancellation delivery-safe: a row cancelled while `sending` may remain `sending`, because startup `recover_stale_sending()` and stale lease recovery convert it to `ambiguous` before retry/reconcile.
+- `src/tg_max_bridge/outbox.py` — preserve the unique key `(tg_chat_id, tg_message_id, max_chat_id)`, marker storage, retry backoff, `ambiguous` reconciliation, stale `sending` lease recovery, and `recover_stale_sending()` startup behavior. No schema change is required.
+- `README.md` — update the Cloud.ru webhook section: accepted updates are durable after SQLite enqueue, but the HTTP status remains `503` until MAX delivery is observed as `sent`; this is intentional so Telegram retries act as the external wake mechanism with `min_instances=0`. Remove wording that says the request synchronously performs delivery.
+- `tests/test_webhook.py` — update webhook tests so accepted non-sent updates return quickly with `503` and do not call the dispatcher; already-sent duplicate rows return `200`; irrelevant updates return `200`; direct receiver without a Telegram application still enqueues and dedupes through the outbox.
+- `tests/test_service.py` — add/update coverage proving webhook mode starts both `telegram-webhook` and `max-dispatcher`, skips Telegram application build when `TELEGRAM_WEBHOOK_AUTO_REGISTER=false`, and shuts down dispatcher/database when either runtime stops or fails.
+- `tests/test_dispatcher.py` and `tests/test_outbox.py` — keep existing retry, ambiguous, marker reconciliation, stale `sending`, and close-transport tests. Add only narrow lifecycle coverage if needed to prove the webhook background dispatcher drains due rows without request-path dispatch.
 
 ## Interfaces
 
-`Settings.telegram_forward_marker: str | None`
+`TelegramWebhook.handle_update(request: object) -> web.Response`
 
-- Default is `"#max"`.
-- Env var is `TELEGRAM_FORWARD_MARKER`.
-- Validator strips surrounding whitespace and returns `None` for empty values.
+- `403`: missing or wrong `X-Telegram-Bot-Api-Secret-Token`.
+- `413`: request body exceeds `telegram_webhook_max_bytes`.
+- `400`: body is not valid JSON object or cannot be parsed as a Telegram update.
+- `200`: update is irrelevant to forwarding, unsupported for forwarding, non-retryable after validation, or the matching outbox row is already `OutboxStatus.SENT`.
+- `503`: update is a valid forwarding trigger and the row was durably enqueued or already existed, but the matching outbox row status is not `sent`.
+- Must not call `Dispatcher.process_once()` and must not start/stop `MaxTransport`.
+- Must enqueue before returning `503` for a new accepted trigger. If enqueue raises before commit, let the request fail with a server error so Telegram retries and no accepted work is silently lost.
 
-`extract_trigger(update: Update, settings: Settings) -> TelegramSourceMessage | RejectReason`
+`run_webhook(application, dispatcher, outbox, settings, stop) -> None`
 
-- `/max` or `/max@<configured_bot>` with no extra text forwards `message.reply_to_message`.
-- `/max <body>` or `/max@<configured_bot> <body>` forwards the command message itself with `message_id == trigger_message_id`; addressed forms are rejected when `telegram_bot_username` is unknown or does not match.
-- Chat must be in `telegram_allowed_chat_ids`. Inline `/max <body>` is allowed
-  for any human member of that chat because it forwards only the sender's own
-  explicit text. Bare reply `/max` remains restricted to
-  `telegram_allowed_user_ids` because it can copy another member's message.
+- Owns only the aiohttp server and optional Telegram webhook registration lifecycle.
+- Does not own dispatcher scheduling; it receives the dispatcher only because `TelegramWebhook` currently keeps it in the constructor. That reference becomes inert in the request path and can be removed later if desired.
+- `GET /healthz` must remain available without Telegram application startup when `TELEGRAM_WEBHOOK_AUTO_REGISTER=false`.
 
-`extract_marker_trigger(update: Update, settings: Settings) -> TelegramSourceMessage | RejectReason`
+`run_service(settings: Settings) -> None`
 
-- Accept only `group`/`supergroup` messages from `telegram_allowed_chat_ids`.
-- Do not require `telegram_allowed_user_ids`.
-- Use `message.text` first, then `message.caption`.
-- Match marker as a standalone whitespace-delimited token, case-insensitively. Must match `#max text`, `text #MAX`, and `text\n#max\nmore`; must not match `foo#max`, `#maximum`, `#max.`, or `/max`.
-- Remove all standalone marker tokens, trim only outer whitespace, and preserve internal newlines/spaces.
-- Reject protected content and blank body after marker removal.
-- Reject `from_user.is_bot is True` when `sender_chat is None`; allow `sender_chat` so anonymous admin posts still work.
+- In polling mode: unchanged, starts polling plus `dispatcher.run_until_stopped()`.
+- In webhook mode: starts `run_webhook(...)` plus `dispatcher.run_until_stopped()` concurrently.
+- Watches both tasks with `asyncio.wait(..., FIRST_COMPLETED)`. If either exits unexpectedly, stop the whole service and surface the error.
+- In `finally`, call `dispatcher.stop()` before cancelling tasks; then stop the transport and close SQLite.
 
-`build_application(settings: Settings, outbox: OutboxRepository) -> TelegramApplication`
+`Dispatcher.run_until_stopped() -> None`
 
-- Keep `concurrent_updates(False)`.
-- Keep the command handler chat-filtered; `extract_trigger()` enforces the
-  narrower user allow-list for bare reply `/max`.
-- Keep marker handler as `chat_filter` plus text/caption filters, no user filter, silently ignoring rejected marker candidates.
+- Continues to loop: `process_once()`, then wait up to `settings.delivery_tick_seconds` or until stopped.
+- The dispatcher is the only code path that sends to MAX in webhook mode.
+- It may keep the MAX MCP session open while the container is warm; `transport.stop()` closes it on service shutdown.
 
-`_accepted_source(update: Update, settings: Settings) -> TelegramSourceMessage | None`
+`OutboxRepository.enqueue(source, payload) -> EnqueueResult`
 
-- Return the source polling would enqueue: command first, marker second.
-- Return `None` for irrelevant/unsupported updates.
-- Build payload only as validation; caller owns enqueue/dispatch.
+- Remains idempotent by `(tg_chat_id, tg_message_id, max_chat_id)`.
+- `created=True` means the handler durably accepted a new source row.
+- `created=False` means a Telegram retry/duplicate loaded the existing row; handler status is based on that row's current `status`.
+
+Outbox status contract:
+
+- `pending`: safe to return fast `503`; dispatcher will lease and send.
+- `sending`: safe to return fast `503`; if the container dies, startup recovery marks it `ambiguous`.
+- `ambiguous`: safe to return fast `503`; dispatcher reconciles by marker before any resend and only resends after `ambiguous_resend_after_seconds`.
+- `sent`: return `200` so Telegram stops retrying that update.
+- `failed`: currently unused for terminal delivery; if introduced later, do not return `200` unless the product explicitly accepts dropping that Telegram update.
 
 ## Risks
 
-- `49e5b9a` currently strips marker with `split()`, which flattens multiline announcements. This should be fixed before deployment.
-- Allowing `#max` from any member of the configured Telegram group can create noise. This is acceptable for a class reserve channel where the Telegram group is the boundary; if MAX is broader or sensitive, add a separate marker allow-list later.
-- `#max.` intentionally should not trigger. Users need to put the marker separated by spaces or on its own line.
-- Bot-loop protection must not block anonymous admins; reject bot users only when there is no `sender_chat`.
-- Cloud.ru Container Apps require deployable images in Artifact Registry in the same project, so GHCR is not a drop-in runtime migration for this Cloud.ru service. It can help CI/build flow, but the final image still needs Cloud.ru Artifact Registry unless hosting changes.
-- After 2026-11-02 the 4000-bonus grant expires; the bridge should remain within Cloud.ru Free Tier for Container Apps/Object Storage at low traffic, but Artifact Registry storage remains a tiny pay-as-you-go cost unless old artifacts are pruned aggressively.
+- `200-on-enqueue` is not safe with `min_instances=0`: if MAX/network fails after Telegram receives `200`, there may be no future HTTP event to wake the container for retry.
+- Fast `503-until-sent` intentionally makes Telegram retry delivered-but-not-yet-acknowledged updates. The outbox unique key and MAX marker reconciliation are therefore not optional; they are the dedupe boundary.
+- Telegram retry windows are finite. This design is sufficient for cold starts, restarts, and ordinary transient failures, but a multi-day MAX outage still needs manual/admin intervention or an external scheduler. Avoid claiming infinite delivery without an always-on worker.
+- SQLite on Object Storage remains a low-traffic, single-instance design. Keep `max_instances=1`; raising it risks lock contention and duplicate delivery pressure.
+- If the platform kills the container during `send_text()`, the row can remain `sending` until the next startup or stale lease recovery. This is acceptable because it is not lost; it becomes `ambiguous` and is reconciled by marker before resend.
+- `TELEGRAM_WEBHOOK_AUTO_REGISTER=true` still requires outbound Telegram Bot API access during startup. For Cloud.ru environments where Bot API is unreliable, keep the documented direct receiver mode: `TELEGRAM_WEBHOOK_AUTO_REGISTER=false` and `TELEGRAM_ACK_MODE=never`.
 
 ## Acceptance criteria
 
-- Existing reply `/max` behavior and authorization remain unchanged.
-- `/max Meet at entrance B` from an allowed user in the configured Telegram group forwards `Meet at entrance B`.
-- `Meet at entrance B #MAX` from any human member in the configured Telegram group forwards `Meet at entrance B`, with no marker in the MAX payload.
-- `Line 1\n#max\nLine 2` forwards without flattening all line breaks.
-- `foo#max`, `#maximum`, and `#max.` do not forward.
-- Private chats, unconfigured chats, protected messages, blank-after-marker messages, and bot-authored messages without `sender_chat` do not forward.
-- Marker forwarding works in both polling and direct Cloud.ru webhook mode.
-- Existing webhook contract remains: accepted update returns 2xx only after outbox status is `sent`; retryable/ambiguous delivery returns 503; irrelevant updates return 2xx.
-- Test-author can work in parallel with implementer because the public function contracts above are fixed.
+- A valid new `/max` or `#max` webhook returns within the request parsing/enqueue budget without starting MAX delivery in the handler.
+- A valid new accepted row in `pending`, `sending`, or `ambiguous` returns `503`, causing Telegram to retry later.
+- A duplicate webhook for a row already marked `sent` returns `200`, causing Telegram to stop retrying.
+- Irrelevant Telegram updates return `200` and do not enqueue or dispatch.
+- Webhook mode starts a background `max-dispatcher` task that drains due outbox rows while the container is warm.
+- A network/MAX failure marks the row retryable or ambiguous through existing dispatcher semantics; later dispatcher ticks or Telegram retries eventually wake another attempt.
+- If the process shuts down after enqueue but before send, the row remains durable and Telegram also still retries because the handler returned `503`.
+- If the process shuts down during send, startup `recover_stale_sending()` or stale lease recovery prevents the row from being stranded permanently and forces marker reconciliation before resend.
+- Existing dedupe semantics and marker-based reconciliation remain unchanged.
+- Test-author can work in parallel with implementer because the return-status, service lifecycle, dispatcher ownership, and outbox contracts above are fixed.

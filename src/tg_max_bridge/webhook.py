@@ -96,7 +96,6 @@ class TelegramWebhook:
             if max_body_size is not None
             else settings.telegram_webhook_max_bytes
         )
-        self._delivery_lock = asyncio.Lock()
         self.application = application
 
     async def start_application(self) -> None:
@@ -177,14 +176,11 @@ class TelegramWebhook:
 
         if expected_source is None:
             return web.Response(status=200)
-
-        async with self._delivery_lock:
-            await self._dispatcher.process_once(close_transport=True)
-            record = await self._outbox.get_by_source(
-                expected_source.chat_id,
-                expected_source.message_id,
-                self._settings.max_chat_id,
-            )
+        record = await self._outbox.get_by_source(
+            expected_source.chat_id,
+            expected_source.message_id,
+            self._settings.max_chat_id,
+        )
         if record is not None and str(record.status) == OutboxStatus.SENT.value:
             return web.Response(status=200)
         return web.Response(status=503)

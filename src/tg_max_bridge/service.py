@@ -223,6 +223,10 @@ async def run_service(settings: Settings) -> None:
                 run_webhook(application, dispatcher, outbox, settings, stop_event),
                 name="telegram-webhook",
             )
+            dispatcher_task = asyncio.create_task(
+                dispatcher.run_until_stopped(),
+                name="max-dispatcher",
+            )
         else:
             telegram_task = asyncio.create_task(
                 _run_polling(application, settings, stop_event),
