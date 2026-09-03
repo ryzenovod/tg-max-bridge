@@ -174,6 +174,26 @@ def _irrelevant_update() -> bytes:
     ).encode()
 
 
+def _inline_command_update() -> bytes:
+    return json.dumps(
+        {
+            "update_id": 1003,
+            "message": {
+                "message_id": 457,
+                "date": 1_788_342_600,
+                "chat": {"id": -100111222333, "type": "supergroup"},
+                "from": {
+                    "id": 42,
+                    "is_bot": False,
+                    "first_name": "Alice",
+                },
+                "text": "/max Meet at entrance B",
+                "entities": [{"type": "bot_command", "offset": 0, "length": 4}],
+            },
+        }
+    ).encode()
+
+
 def _marker_update() -> bytes:
     return json.dumps(
         {
@@ -368,6 +388,37 @@ async def test_webhook_direct_receiver_enqueues_without_telegram_application(
     assert source.chat_id == -100111222333
     assert source.message_id == 123
     assert payload.chat_id == 777000
+
+
+@pytest.mark.asyncio
+async def test_webhook_direct_receiver_accepts_inline_command_without_application(
+    settings_factory,
+):
+    from tg_max_bridge.webhook import TelegramWebhook
+
+    dispatcher = FakeDispatcher(statuses=["sent"])
+    outbox = RecordingOutbox(status="sent")
+    webhook = TelegramWebhook(
+        settings=_settings(
+            settings_factory,
+            telegram_webhook_auto_register=False,
+            telegram_ack_mode="never",
+        ),
+        application=None,
+        dispatcher=dispatcher,
+        outbox=outbox,
+        max_body_size=1024,
+    )
+
+    response = await webhook.handle_update(FakeRequest(body=_inline_command_update()))
+
+    assert response.status == 200
+    assert dispatcher.calls == 1
+    source, payload = outbox.enqueued[0]
+    assert source.message_id == 457
+    assert source.trigger_message_id == 457
+    assert source.text == "Meet at entrance B"
+    assert "Meet at entrance B" in payload.text
 
 
 @pytest.mark.asyncio

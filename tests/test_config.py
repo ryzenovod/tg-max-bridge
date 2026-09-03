@@ -12,6 +12,7 @@ def test_settings_parse_allowed_ids_and_defaults(isolated_env):
 
     assert settings.telegram_allowed_chat_ids == {-100111222333, -100444555666}
     assert settings.telegram_allowed_user_ids == {42, 99}
+    assert settings.telegram_forward_marker == "#max"
     assert settings.telegram_bot_username == "reservebridgebot"
     assert settings.max_chat_id == 777000
     assert settings.max_mcp_directory == Path("/opt/max-mcp")
@@ -82,6 +83,19 @@ def test_settings_requires_allowed_ids(monkeypatch, isolated_env, environment_na
 
     with pytest.raises(ValidationError):
         Settings(_env_file=None)
+
+
+@pytest.mark.parametrize("environment_value", ["", "   "])
+def test_settings_empty_forward_marker_disables_marker_forwarding(
+    monkeypatch, isolated_env, environment_value
+):
+    from tg_max_bridge.config import Settings
+
+    monkeypatch.setenv("TELEGRAM_FORWARD_MARKER", environment_value)
+
+    settings = Settings(_env_file=None)
+
+    assert settings.telegram_forward_marker is None
 
 
 def test_settings_rejects_invalid_ack_mode(monkeypatch, isolated_env):

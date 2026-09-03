@@ -106,6 +106,10 @@ class FakeMessage:
         chat_type: str = "supergroup",
         from_user_id: int = 42,
         from_user_name: str = "Alice",
+        from_user_is_bot: bool = False,
+        sender_chat: Any | None = None,
+        author_signature: str | None = None,
+        has_protected_content: bool = False,
         message_id: int = 456,
         reply_to_message: FakeMessage | None = None,
     ) -> None:
@@ -119,7 +123,11 @@ class FakeMessage:
             id=from_user_id,
             full_name=from_user_name,
             username=from_user_name.lower(),
+            is_bot=from_user_is_bot,
         )
+        self.sender_chat = sender_chat
+        self.author_signature = author_signature
+        self.has_protected_content = has_protected_content
         self.reply_to_message = reply_to_message
 
 
@@ -273,6 +281,7 @@ def isolated_env(monkeypatch, tmp_path):
         "TELEGRAM_BOT_TOKEN",
         "TELEGRAM_ALLOWED_CHAT_IDS",
         "TELEGRAM_ALLOWED_USER_IDS",
+        "TELEGRAM_FORWARD_MARKER",
         "TELEGRAM_BOT_USERNAME",
         "MAX_CHAT_ID",
         "MAX_MCP_DIRECTORY",
