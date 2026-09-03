@@ -227,7 +227,9 @@ Telegram повторил запрос позже.
 - приватный volume, смонтированный в `/state`;
 - env `SQLITE_PATH=/state/bridge.sqlite3`, `HOME=/state/home` и
   `TG_MAX_BRIDGE_BEST_EFFORT_CHMOD=1`,
-  `TG_MAX_BRIDGE_ALLOW_SYNTHETIC_UID=1`;
+  `TG_MAX_BRIDGE_ALLOW_SYNTHETIC_UID=1`,
+  `MAX_MCP_BEST_EFFORT_CHMOD=1`,
+  `MAX_MCP_ALLOW_SYNTHETIC_UID=1`;
 - при недоступном Telegram API из Cloud.ru:
   `TELEGRAM_WEBHOOK_AUTO_REGISTER=false` и `TELEGRAM_ACK_MODE=never`;
 - health probe `GET /healthz`.
@@ -249,16 +251,20 @@ SQLITE_PATH=/state/bridge.sqlite3
 HOME=/state/home
 TG_MAX_BRIDGE_BEST_EFFORT_CHMOD=1
 TG_MAX_BRIDGE_ALLOW_SYNTHETIC_UID=1
+MAX_MCP_BEST_EFFORT_CHMOD=1
+MAX_MCP_ALLOW_SYNTHETIC_UID=1
 ```
 
 `PORT` в Cloud.ru зарезервирован платформой: укажите `8080` в поле порта
 контейнера, а не создавайте одноимённую переменную.
 
 Object Storage не поддерживает Unix `chmod` и может показывать синтетический UID
-владельца. Поэтому cloud-only флаги выше разрешают проигнорировать только ошибки
-`EPERM`/`ENOTSUP` при ужесточении прав и принять такой UID после проверок типа
-файла и отсутствия symlink. В обычном окружении режим остаётся строгим. Бакет
-при этом должен оставаться приватным.
+владельца. Поэтому cloud-only флаги с префиксами `TG_MAX_BRIDGE_` и `MAX_MCP_`
+разрешают обоим процессам проигнорировать только ошибки
+`EPERM`/`EOPNOTSUPP`/`ENOTSUP` при
+ужесточении прав и принять такой UID после проверок типа файла и отсутствия
+symlink. В обычном окружении режим остаётся строгим. Бакет при этом должен
+оставаться приватным.
 
 Если Cloud.ru не может стабильно ходить к Telegram Bot API, выключите
 `TELEGRAM_WEBHOOK_AUTO_REGISTER`. В таком режиме контейнер на старте не вызывает

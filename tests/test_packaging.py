@@ -24,7 +24,7 @@ def test_dockerfile_uses_non_root_user_and_frozen_installs():
             assert "--frozen" in line
 
     assert "https://github.com/ryzenovod/max-mcp.git" in dockerfile
-    assert "b2922b9314056947c60d774cb0bfd48b99a6fc3c" in dockerfile
+    assert "e90d80278f9ae644d22bddc4d34697ecbd508a55" in dockerfile
     assert "git.hubp.de" not in dockerfile
 
 
