@@ -63,6 +63,7 @@ def settings_factory(tmp_path):
             "run",
             "--no-dev",
             "--frozen",
+            "--no-sync",
             "--directory",
             str(settings.max_mcp_directory),
             "max-mcp",

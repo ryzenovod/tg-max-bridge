@@ -19,6 +19,7 @@ def test_settings_parse_allowed_ids_and_defaults(isolated_env):
         "run",
         "--no-dev",
         "--frozen",
+        "--no-sync",
         "--directory",
         "/opt/max-mcp",
         "max-mcp",

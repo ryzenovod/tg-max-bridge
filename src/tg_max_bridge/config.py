@@ -57,6 +57,7 @@ class MaxDiscoverySettings(BaseSettings):
             "run",
             "--no-dev",
             "--frozen",
+            "--no-sync",
             "--directory",
             str(self.max_mcp_directory),
             "max-mcp",

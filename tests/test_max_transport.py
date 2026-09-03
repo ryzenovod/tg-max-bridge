@@ -44,6 +44,7 @@ async def test_transport_start_uses_configured_stdio_command(
         "run",
         "--no-dev",
         "--frozen",
+        "--no-sync",
         "--directory",
         "/opt/max-mcp",
         "max-mcp",
