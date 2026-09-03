@@ -41,6 +41,87 @@ def test_extract_trigger_accepts_plain_max_alias(make_update, settings_factory):
     assert isinstance(result, TelegramSourceMessage)
 
 
+def test_extract_trigger_accepts_inline_command_text(make_update, settings_factory):
+    from tg_max_bridge.models import TelegramSourceMessage
+    from tg_max_bridge.telegram_bot import extract_trigger
+
+    result = extract_trigger(
+        make_update("/max Meet at entrance B", reply=False), settings_factory()
+    )
+
+    assert isinstance(result, TelegramSourceMessage)
+    assert result.message_id == 456
+    assert result.trigger_message_id == 456
+    assert result.text == "Meet at entrance B"
+
+
+def test_extract_trigger_accepts_inline_addressed_command_text(
+    make_update, settings_factory
+):
+    from tg_max_bridge.telegram_bot import extract_trigger
+
+    result = extract_trigger(
+        make_update("/max@ReserveBridgeBot Meet at entrance B", reply=False),
+        settings_factory(),
+    )
+
+    assert result.text == "Meet at entrance B"
+
+
+def test_extract_marker_trigger_accepts_group_marker_from_any_user(settings_factory):
+    from conftest import FakeMessage, fake_update
+
+    from tg_max_bridge.models import TelegramSourceMessage
+    from tg_max_bridge.telegram_bot import extract_marker_trigger
+
+    update = fake_update(
+        FakeMessage(
+            text="Meet at entrance B #max",
+            from_user_id=777,
+            from_user_name="Class Rep",
+            message_id=789,
+        )
+    )
+
+    result = extract_marker_trigger(update, settings_factory())
+
+    assert isinstance(result, TelegramSourceMessage)
+    assert result.chat_id == -100111222333
+    assert result.message_id == 789
+    assert result.trigger_message_id == 789
+    assert result.from_user_id == 777
+    assert result.from_display_name == "Class Rep"
+    assert result.text == "Meet at entrance B"
+
+
+def test_extract_marker_trigger_accepts_caption_marker(settings_factory):
+    from conftest import FakeMessage, fake_update
+
+    from tg_max_bridge.telegram_bot import extract_marker_trigger
+
+    result = extract_marker_trigger(
+        fake_update(FakeMessage(text=None, caption="#max Updated map")),
+        settings_factory(),
+    )
+
+    assert result.text == "Updated map"
+    assert result.attachment_omitted is True
+
+
+def test_extract_marker_trigger_ignores_messages_without_marker(settings_factory):
+    from conftest import FakeMessage, fake_update
+
+    from tg_max_bridge.telegram_bot import extract_marker_trigger
+
+    result = extract_marker_trigger(
+        fake_update(FakeMessage(text="ordinary message")),
+        settings_factory(),
+    )
+
+    assert_rejected(result)
+    assert result.code == "missing_marker"
+
+
 def test_extract_trigger_accepts_reply_caption(make_update, settings_factory):
     from tg_max_bridge.telegram_bot import extract_trigger
 
@@ -121,7 +202,7 @@ def test_extract_trigger_attributes_anonymous_signature(make_update, settings_fa
     assert result.from_user_id != update.effective_message.from_user.id
 
 
-def test_build_application_serializes_updates_and_rejects_command_args(
+def test_build_application_serializes_updates_and_accepts_command_args(
     monkeypatch, settings_factory
 ):
     from tg_max_bridge import telegram_bot
@@ -168,8 +249,7 @@ def test_build_application_serializes_updates_and_rejects_command_args(
     assert result is application
     assert calls["concurrent_updates"] is False
     assert calls["command"] == "max"
-    assert calls["has_args"] is False
-    assert len(application.handlers) == 1
+    assert len(application.handlers) == 2
 
 
 @pytest.mark.parametrize(
@@ -180,7 +260,6 @@ def test_build_application_serializes_updates_and_rejects_command_args(
         ({"chat_id": -100999888777}, {}),
         ({"chat_type": "private"}, {}),
         ({"command": "/start"}, {}),
-        ({"command": "/max unexpected-argument"}, {}),
         ({"command": "/max@OtherBot"}, {}),
         ({"source_text": None, "source_caption": None}, {}),
         ({}, {"telegram_bot_username": "OtherBot"}),

@@ -174,6 +174,25 @@ def _irrelevant_update() -> bytes:
     ).encode()
 
 
+def _marker_update() -> bytes:
+    return json.dumps(
+        {
+            "update_id": 1002,
+            "message": {
+                "message_id": 790,
+                "date": 1_788_342_600,
+                "chat": {"id": -100111222333, "type": "supergroup"},
+                "from": {
+                    "id": 777,
+                    "is_bot": False,
+                    "first_name": "Class Rep",
+                },
+                "text": "Meet at entrance B #max",
+            },
+        }
+    ).encode()
+
+
 def _settings(settings_factory, **overrides: Any):
     from pydantic import SecretStr
 
@@ -349,6 +368,37 @@ async def test_webhook_direct_receiver_enqueues_without_telegram_application(
     assert source.chat_id == -100111222333
     assert source.message_id == 123
     assert payload.chat_id == 777000
+
+
+@pytest.mark.asyncio
+async def test_webhook_direct_receiver_accepts_marker_without_application(
+    settings_factory,
+):
+    from tg_max_bridge.webhook import TelegramWebhook
+
+    dispatcher = FakeDispatcher(statuses=["sent"])
+    outbox = RecordingOutbox(status="sent")
+    webhook = TelegramWebhook(
+        settings=_settings(
+            settings_factory,
+            telegram_webhook_auto_register=False,
+            telegram_ack_mode="never",
+        ),
+        application=None,
+        dispatcher=dispatcher,
+        outbox=outbox,
+        max_body_size=1024,
+    )
+
+    response = await webhook.handle_update(FakeRequest(body=_marker_update()))
+
+    assert response.status == 200
+    assert dispatcher.calls == 1
+    source, payload = outbox.enqueued[0]
+    assert source.message_id == 790
+    assert source.text == "Meet at entrance B"
+    assert "Meet at entrance B" in payload.text
+    assert "#max" not in payload.text
 
 
 @pytest.mark.asyncio

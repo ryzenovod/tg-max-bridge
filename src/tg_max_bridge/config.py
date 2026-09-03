@@ -75,6 +75,7 @@ class Settings(MaxDiscoverySettings):
     telegram_allowed_user_ids: Annotated[set[int], NoDecode] = Field(
         default_factory=set
     )
+    telegram_forward_marker: str | None = "#max"
     telegram_bot_username: str | None = None
     telegram_webhook_url: str | None = None
     telegram_webhook_secret: SecretStr | None = None
@@ -121,6 +122,14 @@ class Settings(MaxDiscoverySettings):
         if not value:
             return None
         return value.removeprefix("@").casefold()
+
+    @field_validator("telegram_forward_marker")
+    @classmethod
+    def normalize_forward_marker(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        return value or None
 
     @field_validator("telegram_webhook_url")
     @classmethod

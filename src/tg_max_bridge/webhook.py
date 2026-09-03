@@ -15,7 +15,7 @@ from .dispatcher import Dispatcher
 from .formatting import UnsupportedMessageError, build_max_payload
 from .models import OutboxStatus, RejectReason, TelegramSourceMessage
 from .outbox import OutboxRepository
-from .telegram_bot import TelegramApplication, extract_trigger
+from .telegram_bot import TelegramApplication, extract_marker_trigger, extract_trigger
 
 logger = logging.getLogger(__name__)
 
@@ -204,7 +204,9 @@ def _accepted_source(
 ) -> TelegramSourceMessage | None:
     source = extract_trigger(update, settings)
     if isinstance(source, RejectReason):
-        return None
+        source = extract_marker_trigger(update, settings)
+        if isinstance(source, RejectReason):
+            return None
     try:
         build_max_payload(source, settings.max_chat_id)
     except UnsupportedMessageError:

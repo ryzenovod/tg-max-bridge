@@ -35,6 +35,7 @@ def settings_factory(tmp_path):
             "telegram_mode": "polling",
             "telegram_allowed_chat_ids": {-100111222333},
             "telegram_allowed_user_ids": {42},
+            "telegram_forward_marker": "#max",
             "telegram_bot_username": "reservebridgebot",
             "telegram_webhook_url": None,
             "telegram_webhook_secret": None,
