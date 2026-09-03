@@ -8,6 +8,8 @@ from pathlib import Path
 
 import aiosqlite
 
+from tg_max_bridge.permissions import chmod_fd, chmod_path
+
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS outbox (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -87,7 +89,7 @@ def _chmod_sqlite_files(path: Path) -> None:
             raise ValueError(f"SQLite path must be a regular file: {candidate}")
         if hasattr(os, "geteuid") and file_stat.st_uid != os.geteuid():
             raise PermissionError(f"SQLite file is not owned by this user: {candidate}")
-        os.chmod(candidate, 0o600, follow_symlinks=False)
+        chmod_path(candidate, 0o600, follow_symlinks=False)
 
 
 def _prepare_sqlite_path(path: Path) -> Path:
@@ -106,7 +108,7 @@ def _prepare_sqlite_path(path: Path) -> Path:
         _validate_existing_sqlite_file(path)
     else:
         try:
-            os.fchmod(descriptor, 0o600)
+            chmod_fd(descriptor, 0o600)
         finally:
             os.close(descriptor)
     return path
@@ -139,7 +141,7 @@ def _create_private_parent_directories(parent: Path) -> None:
         ):
             raise ValueError(f"SQLite parent must be a real directory: {directory}")
         if created:
-            os.chmod(directory, 0o700, follow_symlinks=False)
+            chmod_path(directory, 0o700, follow_symlinks=False)
 
 
 def _reject_symlink_components(path: Path) -> None:
@@ -167,7 +169,7 @@ def _validate_existing_sqlite_file(path: Path) -> None:
         raise ValueError(f"SQLite path must be a regular file: {path}")
     if hasattr(os, "geteuid") and file_stat.st_uid != os.geteuid():
         raise PermissionError(f"SQLite file is not owned by this user: {path}")
-    os.chmod(path, 0o600, follow_symlinks=False)
+    chmod_path(path, 0o600, follow_symlinks=False)
 
 
 @contextmanager

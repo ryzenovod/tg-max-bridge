@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import os
 import stat
 
@@ -103,3 +104,70 @@ async def test_connect_accepts_root_owned_system_symlink_parent(tmp_path, monkey
         await init_schema(db)
     finally:
         await db.close()
+
+
+@pytest.mark.asyncio
+async def test_connect_ignores_chmod_eperm_when_best_effort_enabled(
+    monkeypatch, tmp_path
+):
+    from tg_max_bridge import permissions
+    from tg_max_bridge.db import connect, init_schema
+
+    sqlite_path = tmp_path / "state" / "bridge.sqlite3"
+
+    def object_store_chmod(path, mode, *, follow_symlinks=True):
+        path = os.fspath(path)
+        if os.fspath(tmp_path) in path:
+            raise PermissionError(errno.EPERM, "operation not supported", path)
+
+    def object_store_fchmod(descriptor, mode):
+        raise PermissionError(errno.EPERM, "operation not supported")
+
+    monkeypatch.setenv("TG_MAX_BRIDGE_BEST_EFFORT_CHMOD", "1")
+    monkeypatch.setattr(permissions.os, "chmod", object_store_chmod)
+    monkeypatch.setattr(permissions.os, "fchmod", object_store_fchmod)
+
+    db = await connect(sqlite_path)
+    try:
+        await init_schema(db)
+        async with db.execute("PRAGMA journal_mode") as cursor:
+            row = await cursor.fetchone()
+        assert row is not None
+        assert row[0] == "delete"
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_connect_propagates_chmod_eperm_by_default(monkeypatch, tmp_path):
+    from tg_max_bridge import permissions
+    from tg_max_bridge.db import connect
+
+    sqlite_path = tmp_path / "state" / "bridge.sqlite3"
+
+    def object_store_chmod(path, mode, *, follow_symlinks=True):
+        raise PermissionError(errno.EPERM, "operation not supported", os.fspath(path))
+
+    monkeypatch.setattr(permissions.os, "chmod", object_store_chmod)
+
+    with pytest.raises(PermissionError):
+        await connect(sqlite_path)
+
+
+@pytest.mark.asyncio
+async def test_connect_propagates_unexpected_chmod_error_in_best_effort(
+    monkeypatch, tmp_path
+):
+    from tg_max_bridge import permissions
+    from tg_max_bridge.db import connect
+
+    sqlite_path = tmp_path / "state" / "bridge.sqlite3"
+
+    def broken_chmod(path, mode, *, follow_symlinks=True):
+        raise OSError(errno.EIO, "backend I/O failure", os.fspath(path))
+
+    monkeypatch.setenv("TG_MAX_BRIDGE_BEST_EFFORT_CHMOD", "1")
+    monkeypatch.setattr(permissions.os, "chmod", broken_chmod)
+
+    with pytest.raises(OSError, match="backend I/O failure"):
+        await connect(sqlite_path)

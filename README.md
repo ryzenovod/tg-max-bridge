@@ -225,7 +225,8 @@ Telegram повторил запрос позже.
 - публичный HTTPS endpoint, порт `8080`;
 - `min_instances=0`, `max_instances=1`;
 - приватный volume, смонтированный в `/state`;
-- env `SQLITE_PATH=/state/bridge.sqlite3` и `HOME=/state/home`;
+- env `SQLITE_PATH=/state/bridge.sqlite3`, `HOME=/state/home` и
+  `TG_MAX_BRIDGE_BEST_EFFORT_CHMOD=1`;
 - health probe `GET /healthz`.
 
 Cloud.ru рекомендует SQLite на Object Storage только для небольшой/test-нагрузки.
@@ -239,10 +240,18 @@ Webhook-переменные:
 TELEGRAM_MODE=webhook
 TELEGRAM_WEBHOOK_URL=https://service-name.containerapps.ru/telegram/webhook
 TELEGRAM_WEBHOOK_SECRET=replace-with-random-allowed-token
-PORT=8080
 SQLITE_PATH=/state/bridge.sqlite3
 HOME=/state/home
+TG_MAX_BRIDGE_BEST_EFFORT_CHMOD=1
 ```
+
+`PORT` в Cloud.ru зарезервирован платформой: укажите `8080` в поле порта
+контейнера, а не создавайте одноимённую переменную.
+
+Object Storage не поддерживает Unix `chmod`. Поэтому cloud-only флаг выше
+разрешает проигнорировать только ошибки `EPERM`/`ENOTSUP` при ужесточении прав;
+в обычном окружении режим остаётся строгим. Бакет при этом должен оставаться
+приватным.
 
 Webhook secret передаётся Telegram как
 `X-Telegram-Bot-Api-Secret-Token`; допускаются только латинские буквы, цифры,
@@ -262,7 +271,8 @@ tar -C "$HOME" -czf - \
 `session.db` обязателен. При
 старте entrypoint безопасно распакует seed только один раз, только в
 `~/.max-mcp`, не перезаписывая уже существующую persistent-сессию, выставит права
-`0700/0600` и удалит `MAX_MCP_SESSION_TARB64` из окружения перед запуском моста.
+`0700/0600` там, где файловая система это поддерживает, и удалит
+`MAX_MCP_SESSION_TARB64` из окружения перед запуском моста.
 
 Перед установкой cloud webhook остановите локальный LaunchAgent, иначе локальный
 polling и webhook будут конкурировать за Telegram updates:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import errno
 import io
 import os
 import tarfile
@@ -174,3 +175,72 @@ def test_seed_max_session_defaults_to_process_environment(monkeypatch, tmp_path)
     assert result.seeded is True
     assert _session_db(tmp_path).read_bytes() == b"process env session"
     assert "MAX_MCP_SESSION_TARB64" not in os.environ
+
+
+def test_seed_max_session_ignores_chmod_eperm_when_best_effort_enabled(
+    monkeypatch, tmp_path
+):
+    from tg_max_bridge import permissions
+    from tg_max_bridge.session_seed import seed_max_session_from_env
+
+    def object_store_chmod(path, mode, *, follow_symlinks=True):
+        raise PermissionError(errno.EPERM, "operation not supported", os.fspath(path))
+
+    monkeypatch.setattr(permissions.os, "chmod", object_store_chmod)
+    monkeypatch.setenv("TG_MAX_BRIDGE_BEST_EFFORT_CHMOD", "1")
+    env = {
+        "MAX_MCP_SESSION_TARB64": _seed_archive(
+            {".max-mcp/session.db": b"object storage session"}
+        ),
+    }
+
+    result = seed_max_session_from_env(home_dir=tmp_path, env=env)
+
+    assert result.seeded is True
+    assert _session_db(tmp_path).read_bytes() == b"object storage session"
+    assert "MAX_MCP_SESSION_TARB64" not in env
+
+
+def test_seed_max_session_propagates_chmod_eperm_by_default(monkeypatch, tmp_path):
+    from tg_max_bridge import permissions
+    from tg_max_bridge.session_seed import seed_max_session_from_env
+
+    def object_store_chmod(path, mode, *, follow_symlinks=True):
+        raise PermissionError(errno.EPERM, "operation not supported", os.fspath(path))
+
+    monkeypatch.setattr(permissions.os, "chmod", object_store_chmod)
+    env = {
+        "MAX_MCP_SESSION_TARB64": _seed_archive(
+            {".max-mcp/session.db": b"strict session"}
+        )
+    }
+
+    with pytest.raises(PermissionError):
+        seed_max_session_from_env(home_dir=tmp_path, env=env)
+
+    assert not _session_db(tmp_path).exists()
+    assert "MAX_MCP_SESSION_TARB64" not in env
+
+
+def test_seed_max_session_propagates_unexpected_chmod_error_in_best_effort(
+    monkeypatch, tmp_path
+):
+    from tg_max_bridge import permissions
+    from tg_max_bridge.session_seed import seed_max_session_from_env
+
+    def broken_chmod(path, mode, *, follow_symlinks=True):
+        raise OSError(errno.EIO, "backend I/O failure", os.fspath(path))
+
+    monkeypatch.setattr(permissions.os, "chmod", broken_chmod)
+    monkeypatch.setenv("TG_MAX_BRIDGE_BEST_EFFORT_CHMOD", "1")
+    env = {
+        "MAX_MCP_SESSION_TARB64": _seed_archive(
+            {".max-mcp/session.db": b"strict session"}
+        ),
+    }
+
+    with pytest.raises(OSError, match="backend I/O failure"):
+        seed_max_session_from_env(home_dir=tmp_path, env=env)
+
+    assert not _session_db(tmp_path).exists()
+    assert "MAX_MCP_SESSION_TARB64" not in env

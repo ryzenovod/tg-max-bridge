@@ -11,6 +11,8 @@ from collections.abc import MutableMapping
 from dataclasses import dataclass
 from pathlib import Path
 
+from tg_max_bridge.permissions import chmod_path
+
 ALLOWED_SESSION_FILES = frozenset(
     {"session.db", "session.kind", "session.phone", "session.json"}
 )
@@ -105,7 +107,7 @@ def _install_session_files(files: dict[str, bytes], session_dir: Path) -> None:
 
     temporary_dir = Path(tempfile.mkdtemp(prefix=".max-mcp-seed-", dir=session_parent))
     try:
-        temporary_dir.chmod(0o700)
+        chmod_path(temporary_dir, 0o700)
         for name, data in files.items():
             _write_session_file(temporary_dir / name, data)
         temporary_dir.rename(session_dir)
@@ -136,7 +138,7 @@ def _write_session_file(path: Path, data: bytes) -> None:
         ) from exc
     with os.fdopen(fd, "wb") as file:
         file.write(data)
-    path.chmod(0o600)
+    chmod_path(path, 0o600)
 
 
 if __name__ == "__main__":
