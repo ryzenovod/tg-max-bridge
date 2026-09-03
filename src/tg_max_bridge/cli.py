@@ -141,6 +141,7 @@ async def _discover_telegram(
         token.get_secret_value() if hasattr(token, "get_secret_value") else str(token)
     )
     async with Bot(token=token_value) as bot:
+        me = await bot.get_me()
         updates = await bot.get_updates(
             limit=limit,
             timeout=0,
@@ -173,9 +174,11 @@ async def _discover_telegram(
         )
 
     if not shown:
+        username = _terminal_text(me.username) if me.username else None
+        command = f"/max@{username}" if username else "/max"
         typer.echo(
-            "No recent group commands found. Add the bot to the group, send /max, "
-            "then run this command again before starting the bridge."
+            "No recent group commands found. Add the bot to the group, send "
+            f"{command}, then run this command again before starting the bridge."
         )
 
 

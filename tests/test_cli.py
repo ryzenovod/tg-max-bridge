@@ -102,6 +102,14 @@ async def test_discover_telegram_prints_chat_and_user_ids(
         async def __aexit__(self, exc_type, exc, traceback):
             return None
 
+        async def get_me(self):
+            return User(
+                id=999,
+                first_name="Bridge Bot",
+                is_bot=True,
+                username="maxmcpbot",
+            )
+
         async def get_updates(self, **kwargs):
             assert kwargs == {
                 "limit": 10,
@@ -118,6 +126,43 @@ async def test_discover_telegram_prints_chat_and_user_ids(
     assert output.count("chat_id=-100987") == 1
     assert "user_id=456" in output
     assert "Reserve group" in output
+
+
+@pytest.mark.asyncio
+async def test_discover_telegram_empty_result_shows_addressed_command(
+    monkeypatch, settings_factory, capsys
+):
+    from telegram import User
+
+    from tg_max_bridge import cli
+
+    class FakeBot:
+        def __init__(self, *, token):
+            assert token == "123:test-token"
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return None
+
+        async def get_me(self):
+            return User(
+                id=999,
+                first_name="Bridge Bot",
+                is_bot=True,
+                username="maxmcpbot",
+            )
+
+        async def get_updates(self, **kwargs):
+            return ()
+
+    monkeypatch.setattr(cli, "Bot", FakeBot)
+
+    await cli._discover_telegram(settings_factory(), limit=10)
+
+    output = capsys.readouterr().out
+    assert "/max@maxmcpbot" in output
 
 
 def test_operator_docs_and_examples_do_not_contain_real_secrets_or_sessions():
