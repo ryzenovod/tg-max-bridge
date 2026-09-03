@@ -171,3 +171,55 @@ async def test_connect_propagates_unexpected_chmod_error_in_best_effort(
 
     with pytest.raises(OSError, match="backend I/O failure"):
         await connect(sqlite_path)
+
+
+@pytest.mark.asyncio
+async def test_connect_accepts_synthetic_owner_when_explicitly_enabled(
+    monkeypatch, tmp_path
+):
+    from tg_max_bridge import db as db_module
+    from tg_max_bridge.db import connect, init_schema
+
+    sqlite_path = tmp_path / "bridge.sqlite3"
+    sqlite_path.touch(mode=0o600)
+    original_lstat = db_module.Path.lstat
+
+    def synthetic_owner_lstat(path):
+        result = original_lstat(path)
+        if path == sqlite_path:
+            values = list(result)
+            values[4] = os.geteuid() + 1
+            return os.stat_result(values)
+        return result
+
+    monkeypatch.setenv("TG_MAX_BRIDGE_ALLOW_SYNTHETIC_UID", "1")
+    monkeypatch.setattr(db_module.Path, "lstat", synthetic_owner_lstat)
+
+    db = await connect(sqlite_path)
+    try:
+        await init_schema(db)
+    finally:
+        await db.close()
+
+
+@pytest.mark.asyncio
+async def test_connect_rejects_synthetic_owner_by_default(monkeypatch, tmp_path):
+    from tg_max_bridge import db as db_module
+    from tg_max_bridge.db import connect
+
+    sqlite_path = tmp_path / "bridge.sqlite3"
+    sqlite_path.touch(mode=0o600)
+    original_lstat = db_module.Path.lstat
+
+    def synthetic_owner_lstat(path):
+        result = original_lstat(path)
+        if path == sqlite_path:
+            values = list(result)
+            values[4] = os.geteuid() + 1
+            return os.stat_result(values)
+        return result
+
+    monkeypatch.setattr(db_module.Path, "lstat", synthetic_owner_lstat)
+
+    with pytest.raises(PermissionError, match="not owned"):
+        await connect(sqlite_path)

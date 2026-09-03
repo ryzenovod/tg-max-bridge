@@ -8,7 +8,7 @@ from pathlib import Path
 
 import aiosqlite
 
-from tg_max_bridge.permissions import chmod_fd, chmod_path
+from tg_max_bridge.permissions import chmod_fd, chmod_path, owner_matches_current_user
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS outbox (
@@ -87,7 +87,7 @@ def _chmod_sqlite_files(path: Path) -> None:
             raise ValueError(f"SQLite file must not be a symlink: {candidate}")
         if not stat.S_ISREG(file_stat.st_mode):
             raise ValueError(f"SQLite path must be a regular file: {candidate}")
-        if hasattr(os, "geteuid") and file_stat.st_uid != os.geteuid():
+        if not owner_matches_current_user(file_stat.st_uid):
             raise PermissionError(f"SQLite file is not owned by this user: {candidate}")
         chmod_path(candidate, 0o600, follow_symlinks=False)
 
@@ -167,7 +167,7 @@ def _validate_existing_sqlite_file(path: Path) -> None:
         raise ValueError(f"SQLite file must not be a symlink: {path}")
     if not stat.S_ISREG(file_stat.st_mode):
         raise ValueError(f"SQLite path must be a regular file: {path}")
-    if hasattr(os, "geteuid") and file_stat.st_uid != os.geteuid():
+    if not owner_matches_current_user(file_stat.st_uid):
         raise PermissionError(f"SQLite file is not owned by this user: {path}")
     chmod_path(path, 0o600, follow_symlinks=False)
 

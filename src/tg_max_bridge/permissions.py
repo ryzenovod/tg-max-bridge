@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 
 BEST_EFFORT_CHMOD_ENV = "TG_MAX_BRIDGE_BEST_EFFORT_CHMOD"
+ALLOW_SYNTHETIC_UID_ENV = "TG_MAX_BRIDGE_ALLOW_SYNTHETIC_UID"
 
 _UNSUPPORTED_CHMOD_ERRNOS = frozenset(
     code
@@ -37,8 +38,17 @@ def chmod_path(path: Path, mode: int, *, follow_symlinks: bool = True) -> bool:
     return True
 
 
+def owner_matches_current_user(owner_uid: int) -> bool:
+    if not hasattr(os, "geteuid") or owner_uid == os.geteuid():
+        return True
+    return _env_flag_enabled(ALLOW_SYNTHETIC_UID_ENV)
+
+
 def _can_ignore_unsupported_chmod(exc: OSError) -> bool:
-    return (
-        os.environ.get(BEST_EFFORT_CHMOD_ENV, "").lower() in {"1", "true", "yes", "on"}
-        and exc.errno in _UNSUPPORTED_CHMOD_ERRNOS
+    return _env_flag_enabled(BEST_EFFORT_CHMOD_ENV) and (
+        exc.errno in _UNSUPPORTED_CHMOD_ERRNOS
     )
+
+
+def _env_flag_enabled(name: str) -> bool:
+    return os.environ.get(name, "").lower() in {"1", "true", "yes", "on"}

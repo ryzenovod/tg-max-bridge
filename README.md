@@ -226,7 +226,8 @@ Telegram повторил запрос позже.
 - `min_instances=0`, `max_instances=1`;
 - приватный volume, смонтированный в `/state`;
 - env `SQLITE_PATH=/state/bridge.sqlite3`, `HOME=/state/home` и
-  `TG_MAX_BRIDGE_BEST_EFFORT_CHMOD=1`;
+  `TG_MAX_BRIDGE_BEST_EFFORT_CHMOD=1`,
+  `TG_MAX_BRIDGE_ALLOW_SYNTHETIC_UID=1`;
 - health probe `GET /healthz`.
 
 Cloud.ru рекомендует SQLite на Object Storage только для небольшой/test-нагрузки.
@@ -243,15 +244,17 @@ TELEGRAM_WEBHOOK_SECRET=replace-with-random-allowed-token
 SQLITE_PATH=/state/bridge.sqlite3
 HOME=/state/home
 TG_MAX_BRIDGE_BEST_EFFORT_CHMOD=1
+TG_MAX_BRIDGE_ALLOW_SYNTHETIC_UID=1
 ```
 
 `PORT` в Cloud.ru зарезервирован платформой: укажите `8080` в поле порта
 контейнера, а не создавайте одноимённую переменную.
 
-Object Storage не поддерживает Unix `chmod`. Поэтому cloud-only флаг выше
-разрешает проигнорировать только ошибки `EPERM`/`ENOTSUP` при ужесточении прав;
-в обычном окружении режим остаётся строгим. Бакет при этом должен оставаться
-приватным.
+Object Storage не поддерживает Unix `chmod` и может показывать синтетический UID
+владельца. Поэтому cloud-only флаги выше разрешают проигнорировать только ошибки
+`EPERM`/`ENOTSUP` при ужесточении прав и принять такой UID после проверок типа
+файла и отсутствия symlink. В обычном окружении режим остаётся строгим. Бакет
+при этом должен оставаться приватным.
 
 Webhook secret передаётся Telegram как
 `X-Telegram-Bot-Api-Secret-Token`; допускаются только латинские буквы, цифры,
