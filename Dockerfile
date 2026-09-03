@@ -1,7 +1,7 @@
 FROM ghcr.io/astral-sh/uv:python3.13-bookworm-slim
 
 ARG MAX_MCP_REPO=https://github.com/ryzenovod/max-mcp.git
-ARG MAX_MCP_COMMIT=e15dcf39c74948b57538fa2db52ca5c30af0e504
+ARG MAX_MCP_COMMIT=b2922b9314056947c60d774cb0bfd48b99a6fc3c
 
 WORKDIR /app
 

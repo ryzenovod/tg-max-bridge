@@ -157,7 +157,7 @@ sudo useradd --system --home /var/lib/tg-max-bridge \
   --create-home --shell /usr/sbin/nologin tg-max-bridge
 sudo git clone https://github.com/ryzenovod/tg-max-bridge.git /opt/tg-max-bridge
 sudo git clone https://github.com/ryzenovod/max-mcp.git /opt/max-mcp
-sudo git -C /opt/max-mcp checkout e15dcf39c74948b57538fa2db52ca5c30af0e504
+sudo git -C /opt/max-mcp checkout b2922b9314056947c60d774cb0bfd48b99a6fc3c
 sudo uv sync --directory /opt/tg-max-bridge --no-dev --frozen
 sudo uv sync --directory /opt/max-mcp --no-dev --frozen
 sudo install -o root -g tg-max-bridge -m 0640 \
@@ -191,10 +191,11 @@ sudo systemctl status tg-max-bridge
 
 ## Docker
 
-Docker-образ закрепляет `max-mcp` на проверенном security-refresh commit
-`e15dcf39c74948b57538fa2db52ca5c30af0e504`. Он основан на upstream commit
-`0485269e3fa7fc1d9dce00ac8005b255402951a0`, но обновляет уязвимые зависимости;
-`pip-audit` для этого окружения проходит без находок. Compose использует отдельные
+Docker-образ закрепляет `max-mcp` на проверенном commit
+`b2922b9314056947c60d774cb0bfd48b99a6fc3c`. Он основан на upstream commit
+`0485269e3fa7fc1d9dce00ac8005b255402951a0`, обновляет уязвимые зависимости и
+исправляет нормализацию чатов с бинарными полями; `pip-audit` для этого окружения
+проходит без находок. Compose использует отдельные
 именованные тома для очереди и MAX-сессии и запускает процесс без root-прав.
 
 ```bash
