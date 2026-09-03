@@ -9,6 +9,86 @@ import pytest
 
 
 @pytest.mark.asyncio
+async def test_webhook_without_auto_register_skips_application_build(
+    monkeypatch,
+    settings_factory,
+    tmp_path,
+):
+    from tg_max_bridge import service
+
+    events: list[str] = []
+    dispatcher_stopped = asyncio.Event()
+
+    class FakeDb:
+        async def close(self):
+            events.append("db_closed")
+
+    class FakeOutbox:
+        async def recover_stale_sending(self, *, now_ms: int):
+            return 0
+
+    class FakeTransport:
+        async def start(self):
+            events.append("transport_started")
+
+        async def stop(self):
+            events.append("transport_stopped")
+
+    class FakeDispatcher:
+        def __init__(self, outbox, transport, settings):
+            pass
+
+        def stop(self):
+            events.append("dispatcher_stopped")
+            dispatcher_stopped.set()
+
+        async def run_until_stopped(self):
+            events.append("dispatcher_started")
+            await dispatcher_stopped.wait()
+
+    def fail_build_application(settings, outbox):
+        raise AssertionError("build_application should not be called")
+
+    async def fake_run_webhook(application, dispatcher, outbox, settings, stop):
+        events.append("webhook_started")
+        assert application is None
+        stop.set()
+
+    monkeypatch.setattr(
+        service,
+        "connect",
+        lambda path: asyncio.sleep(0, result=FakeDb()),
+    )
+    monkeypatch.setattr(service, "init_schema", lambda db: asyncio.sleep(0))
+    monkeypatch.setattr(
+        service, "OutboxRepository", lambda *args, **kwargs: FakeOutbox()
+    )
+    monkeypatch.setattr(service, "MaxTransport", lambda settings: FakeTransport())
+    monkeypatch.setattr(service, "Dispatcher", FakeDispatcher)
+    monkeypatch.setattr(service, "build_application", fail_build_application)
+    monkeypatch.setattr(service, "run_webhook", fake_run_webhook)
+
+    await asyncio.wait_for(
+        service.run_service(
+            settings_factory(
+                sqlite_path=tmp_path / "bridge.sqlite3",
+                telegram_mode="webhook",
+                telegram_webhook_url=(
+                    "https://reserve-bridge.containerapps.ru/telegram/webhook"
+                ),
+                telegram_webhook_secret="secret-with-at-least-32-characters",
+                telegram_webhook_auto_register=False,
+                telegram_ack_mode="never",
+            )
+        ),
+        timeout=0.2,
+    )
+
+    assert "webhook_started" in events
+    assert "db_closed" in events
+
+
+@pytest.mark.asyncio
 async def test_service_closes_database_when_initialization_fails(
     monkeypatch, settings_factory, tmp_path
 ):

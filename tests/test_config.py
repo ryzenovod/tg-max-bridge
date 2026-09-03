@@ -166,7 +166,10 @@ def test_webhook_mode_accepts_valid_cloud_settings(monkeypatch, isolated_env):
         "TELEGRAM_WEBHOOK_URL",
         "https://reserve-bridge.containerapps.ru/telegram/webhook",
     )
-    monkeypatch.setenv("TELEGRAM_WEBHOOK_SECRET", "Az_09-secret.token")
+    monkeypatch.setenv(
+        "TELEGRAM_WEBHOOK_SECRET",
+        "Az_09-secret.token.with-32-characters",
+    )
     monkeypatch.setenv("PORT", "8080")
 
     settings = Settings(_env_file=None)
@@ -175,7 +178,9 @@ def test_webhook_mode_accepts_valid_cloud_settings(monkeypatch, isolated_env):
     assert str(settings.telegram_webhook_url) == (
         "https://reserve-bridge.containerapps.ru/telegram/webhook"
     )
-    assert settings.telegram_webhook_secret.get_secret_value() == "Az_09-secret.token"
+    assert settings.telegram_webhook_secret.get_secret_value() == (
+        "Az_09-secret.token.with-32-characters"
+    )
     assert settings.port == 8080
 
 
@@ -189,7 +194,7 @@ def test_webhook_direct_receiver_requires_ack_never(monkeypatch, isolated_env):
         "TELEGRAM_WEBHOOK_URL",
         "https://reserve-bridge.containerapps.ru/telegram/webhook",
     )
-    monkeypatch.setenv("TELEGRAM_WEBHOOK_SECRET", "valid_secret")
+    monkeypatch.setenv("TELEGRAM_WEBHOOK_SECRET", "valid_secret_with_minimum_length")
     monkeypatch.setenv("TELEGRAM_WEBHOOK_AUTO_REGISTER", "false")
     monkeypatch.setenv("TELEGRAM_ACK_MODE", "errors")
 
@@ -201,6 +206,7 @@ def test_webhook_direct_receiver_requires_ack_never(monkeypatch, isolated_env):
     "secret",
     [
         "",
+        "too-short-but-allowed",
         "has space",
         "кириллица",
         "slash/not-allowed",
@@ -232,7 +238,7 @@ def test_webhook_url_must_be_https(monkeypatch, isolated_env):
 
     monkeypatch.setenv("TELEGRAM_MODE", "webhook")
     monkeypatch.setenv("TELEGRAM_WEBHOOK_URL", "http://localhost:8080/hook")
-    monkeypatch.setenv("TELEGRAM_WEBHOOK_SECRET", "valid_secret")
+    monkeypatch.setenv("TELEGRAM_WEBHOOK_SECRET", "valid_secret_with_minimum_length")
 
     with pytest.raises(ValidationError, match="TELEGRAM_WEBHOOK_URL"):
         Settings(_env_file=None)

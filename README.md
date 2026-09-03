@@ -242,7 +242,7 @@ Webhook-переменные:
 ```dotenv
 TELEGRAM_MODE=webhook
 TELEGRAM_WEBHOOK_URL=https://service-name.containerapps.ru/telegram/webhook
-TELEGRAM_WEBHOOK_SECRET=replace-with-random-allowed-token
+TELEGRAM_WEBHOOK_SECRET=replace-with-32-to-256-char-random-secret
 TELEGRAM_WEBHOOK_AUTO_REGISTER=false
 TELEGRAM_ACK_MODE=never
 SQLITE_PATH=/state/bridge.sqlite3
@@ -271,7 +271,7 @@ Object Storage не поддерживает Unix `chmod` и может пока
 
 Webhook secret передаётся Telegram как
 `X-Telegram-Bot-Api-Secret-Token`; допускаются только латинские буквы, цифры,
-`_`, `.` и `-`, длина 1–256 символов. URL должен быть HTTPS.
+`_`, `.` и `-`, длина 32-256 символов. URL должен быть HTTPS.
 
 MAX-сессию в облаке не кладите в образ. Сделайте локально gzip-tar только из
 ожидаемых файлов сессии и положите результат в secret env

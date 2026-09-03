@@ -141,8 +141,8 @@ class Settings(MaxDiscoverySettings):
         allowed = set(
             "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_.-"
         )
-        if not 1 <= len(secret) <= 256:
-            raise ValueError("TELEGRAM_WEBHOOK_SECRET must be 1-256 characters")
+        if not 32 <= len(secret) <= 256:
+            raise ValueError("TELEGRAM_WEBHOOK_SECRET must be 32-256 characters")
         if any(character not in allowed for character in secret):
             raise ValueError("TELEGRAM_WEBHOOK_SECRET contains invalid characters")
         return value
