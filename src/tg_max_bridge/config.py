@@ -29,6 +29,7 @@ class TelegramDiscoverySettings(BaseSettings):
     model_config = SETTINGS_CONFIG
 
     telegram_bot_token: SecretStr
+    log_level: str = "INFO"
 
     @field_validator("telegram_bot_token")
     @classmethod

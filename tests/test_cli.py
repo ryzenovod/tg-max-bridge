@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import logging
 import re
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import pytest
 import typer
@@ -179,3 +181,85 @@ def test_operator_docs_and_examples_do_not_contain_real_secrets_or_sessions():
         assert not re.search(r"\b\d{8,12}:[A-Za-z0-9_-]{30,}\b", text), path
         assert "session.db" not in text, path
         assert "MAX_CHAT_ID=123456789" not in text or path.name == ".env.example"
+
+
+def test_run_command_logs_sanitized_exception_without_reraising_raw_traceback(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    settings_factory: Any,
+) -> None:
+    from tg_max_bridge import cli
+
+    token = "999:fake-private-token"
+    settings = settings_factory(telegram_bot_token=token)
+
+    async def fail_service(_settings: Any) -> None:
+        raise RuntimeError(f"startup failed with {token}")
+
+    previous_factory = logging.getLogRecordFactory()
+    previous_make_record = logging.Logger.makeRecord
+    monkeypatch.setattr(cli, "Settings", lambda: settings)
+    monkeypatch.setattr(cli, "run_service", fail_service)
+
+    try:
+        with pytest.raises(typer.Exit) as exc_info:
+            cli.run()
+    finally:
+        logging.setLogRecordFactory(previous_factory)
+        logging.Logger.makeRecord = previous_make_record
+
+    captured = capsys.readouterr().err
+    assert exc_info.value.exit_code == 1
+    assert token not in captured
+    assert "RuntimeError: startup failed with [REDACTED_TELEGRAM_TOKEN]" in captured
+
+
+def test_discover_telegram_command_logs_sanitized_exception(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    settings_factory: Any,
+) -> None:
+    from telegram import User
+
+    from tg_max_bridge import cli
+
+    token = "999:fake-private-token"
+    settings = settings_factory(telegram_bot_token=token)
+
+    class FakeBot:
+        def __init__(self, *, token: str) -> None:
+            assert token == "999:fake-private-token"
+
+        async def __aenter__(self) -> FakeBot:
+            return self
+
+        async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
+            return None
+
+        async def get_me(self) -> User:
+            return User(
+                id=999,
+                first_name="Bridge Bot",
+                is_bot=True,
+                username="maxmcpbot",
+            )
+
+        async def get_updates(self, **kwargs: object) -> tuple[()]:
+            raise RuntimeError(f"https://api.telegram.org/bot{token}/getUpdates failed")
+
+    previous_factory = logging.getLogRecordFactory()
+    previous_make_record = logging.Logger.makeRecord
+    monkeypatch.setattr(cli, "TelegramDiscoverySettings", lambda: settings)
+    monkeypatch.setattr(cli, "Bot", FakeBot)
+
+    try:
+        with pytest.raises(typer.Exit) as exc_info:
+            cli.discover_telegram(limit=10)
+    finally:
+        logging.setLogRecordFactory(previous_factory)
+        logging.Logger.makeRecord = previous_make_record
+
+    captured = capsys.readouterr().err
+    assert exc_info.value.exit_code == 1
+    assert token not in captured
+    assert "bot[REDACTED_TELEGRAM_TOKEN]/getUpdates failed" in captured

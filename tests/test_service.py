@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import io
+import logging
+from typing import Any
 
 import pytest
 
@@ -167,3 +170,276 @@ async def test_service_stops_polling_and_closes_db_when_dispatcher_fails(
     assert "polling_started" in events
     assert "polling_stopped" in events
     assert "db_closed" in events
+
+
+def test_configure_logging_redacts_telegram_token_and_suppresses_httpx(
+    capsys: pytest.CaptureFixture[str], settings_factory: Any
+) -> None:
+    from tg_max_bridge import service
+
+    token = "999:fake-private-token"
+    previous_factory = logging.getLogRecordFactory()
+    previous_make_record = logging.Logger.makeRecord
+    previous_httpx_level = logging.getLogger("httpx").level
+    previous_httpcore_level = logging.getLogger("httpcore").level
+    try:
+        service.configure_logging(
+            settings_factory(telegram_bot_token=token, log_level="INFO")
+        )
+
+        logging.getLogger("tg_max_bridge.service").info(
+            "direct token in message: %s", token
+        )
+        try:
+            raise RuntimeError(f"token in exception text: {token}")
+        except RuntimeError:
+            logging.getLogger("thirdparty").exception(
+                "token in third-party URL: https://api.telegram.org/bot%s/getUpdates",
+                token,
+            )
+        logging.getLogger("httpx").info(
+            "GET https://api.telegram.org/bot%s/getMe", token
+        )
+    finally:
+        logging.setLogRecordFactory(previous_factory)
+        logging.Logger.makeRecord = previous_make_record
+        logging.getLogger("httpx").setLevel(previous_httpx_level)
+        logging.getLogger("httpcore").setLevel(previous_httpcore_level)
+
+    captured = capsys.readouterr().err
+    assert token not in captured
+    assert "[REDACTED_TELEGRAM_TOKEN]" in captured
+    assert "token in exception text: [REDACTED_TELEGRAM_TOKEN]" in captured
+    assert "getMe" not in captured
+
+
+def test_configure_logging_redacts_child_logger_with_own_handler(
+    settings_factory: Any,
+) -> None:
+    from tg_max_bridge import service
+
+    token = "999:fake-private-token"
+    stream = io.StringIO()
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(logging.Formatter("%(levelname)s:%(message)s"))
+    child_logger = logging.getLogger("thirdparty.own_handler")
+    previous_factory = logging.getLogRecordFactory()
+    previous_make_record = logging.Logger.makeRecord
+    previous_handlers = child_logger.handlers[:]
+    previous_propagate = child_logger.propagate
+    previous_level = child_logger.level
+    try:
+        service.configure_logging(
+            settings_factory(telegram_bot_token=token, log_level="INFO")
+        )
+        child_logger.handlers = [handler]
+        child_logger.propagate = False
+        child_logger.setLevel(logging.INFO)
+
+        try:
+            raise RuntimeError(f"owned handler exception includes {token}")
+        except RuntimeError:
+            child_logger.exception("owned handler URL contains %s", token)
+    finally:
+        logging.setLogRecordFactory(previous_factory)
+        logging.Logger.makeRecord = previous_make_record
+        child_logger.handlers = previous_handlers
+        child_logger.propagate = previous_propagate
+        child_logger.setLevel(previous_level)
+
+    output = stream.getvalue()
+    assert token not in output
+    assert "[REDACTED_TELEGRAM_TOKEN]" in output
+
+
+def test_configure_logging_redacts_string_extra_fields(settings_factory: Any) -> None:
+    from tg_max_bridge import service
+
+    token = "999:fake-private-token"
+    stream = io.StringIO()
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(logging.Formatter("%(telegram_url)s"))
+    child_logger = logging.getLogger("thirdparty.extra_handler")
+    previous_factory = logging.getLogRecordFactory()
+    previous_make_record = logging.Logger.makeRecord
+    previous_handlers = child_logger.handlers[:]
+    previous_propagate = child_logger.propagate
+    previous_level = child_logger.level
+    try:
+        service.configure_logging(
+            settings_factory(telegram_bot_token=token, log_level="INFO")
+        )
+        child_logger.handlers = [handler]
+        child_logger.propagate = False
+        child_logger.setLevel(logging.INFO)
+
+        child_logger.info(
+            "extra field redaction",
+            extra={
+                "telegram_url": f"https://api.telegram.org/bot{token}/getUpdates",
+            },
+        )
+    finally:
+        logging.setLogRecordFactory(previous_factory)
+        logging.Logger.makeRecord = previous_make_record
+        child_logger.handlers = previous_handlers
+        child_logger.propagate = previous_propagate
+        child_logger.setLevel(previous_level)
+
+    output = stream.getvalue()
+    assert token not in output
+    assert "bot[REDACTED_TELEGRAM_TOKEN]/getUpdates" in output
+
+
+def test_configure_logging_sanitizes_nested_and_object_extra_values(
+    settings_factory: Any,
+) -> None:
+    from httpx import URL
+    from telegram import Bot
+
+    from tg_max_bridge import service
+
+    class TokenObject:
+        def __str__(self) -> str:
+            return f"custom object contains {token}"
+
+    class BrokenStr:
+        def __str__(self) -> str:
+            raise RuntimeError("cannot stringify")
+
+    class CaptureHandler(logging.Handler):
+        def __init__(self) -> None:
+            super().__init__()
+            self.records: list[logging.LogRecord] = []
+
+        def emit(self, record: logging.LogRecord) -> None:
+            self.records.append(record)
+
+    token = "999:fake-private-token"
+    payload = {
+        f"key-{token}": [
+            URL(f"https://api.telegram.org/bot{token}/getUpdates"),
+            {"nested": (f"value-{token}", TokenObject())},
+        ],
+        "bot": Bot(token=token),
+        "broken": BrokenStr(),
+    }
+    handler = CaptureHandler()
+    structured_logger = logging.getLogger("thirdparty.structured")
+    previous_factory = logging.getLogRecordFactory()
+    previous_make_record = logging.Logger.makeRecord
+    previous_handlers = structured_logger.handlers[:]
+    previous_propagate = structured_logger.propagate
+    previous_level = structured_logger.level
+    try:
+        service.configure_logging(
+            settings_factory(telegram_bot_token=token, log_level="INFO")
+        )
+        structured_logger.handlers = [handler]
+        structured_logger.propagate = False
+        structured_logger.setLevel(logging.INFO)
+
+        structured_logger.info(
+            "structured extra",
+            extra={
+                "telegram_url": URL(f"https://api.telegram.org/bot{token}/getUpdates"),
+                "payload": payload,
+            },
+        )
+    finally:
+        logging.setLogRecordFactory(previous_factory)
+        logging.Logger.makeRecord = previous_make_record
+        structured_logger.handlers = previous_handlers
+        structured_logger.propagate = previous_propagate
+        structured_logger.setLevel(previous_level)
+
+    assert f"key-{token}" in payload
+    assert isinstance(payload["bot"], Bot)
+    record = handler.records[0]
+    assert token not in repr(record.__dict__)
+    assert isinstance(record.payload, dict)
+    assert isinstance(record.payload["bot"], str)
+    assert record.payload["broken"] == "<unprintable BrokenStr>"
+    assert "bot[REDACTED_TELEGRAM_TOKEN]/getUpdates" in record.telegram_url
+
+
+def test_configure_logging_reconfiguration_keeps_prior_tokens(
+    settings_factory: Any,
+) -> None:
+    from tg_max_bridge import service
+
+    first_token = "111:first-fake-token"
+    second_token = "222:second-fake-token"
+    stream = io.StringIO()
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(logging.Formatter("%(message)s %(telegram_url)s"))
+    target_logger = logging.getLogger("thirdparty.reconfigured")
+    previous_factory = logging.getLogRecordFactory()
+    previous_make_record = logging.Logger.makeRecord
+    previous_handlers = target_logger.handlers[:]
+    previous_propagate = target_logger.propagate
+    previous_level = target_logger.level
+    try:
+        service.configure_logging(
+            settings_factory(telegram_bot_token=first_token, log_level="INFO")
+        )
+        service.configure_logging(
+            settings_factory(telegram_bot_token=second_token, log_level="INFO")
+        )
+        target_logger.handlers = [handler]
+        target_logger.propagate = False
+        target_logger.setLevel(logging.INFO)
+
+        target_logger.info(
+            "old=%s new=%s",
+            first_token,
+            second_token,
+            extra={"telegram_url": f"{first_token}/{second_token}"},
+        )
+    finally:
+        logging.setLogRecordFactory(previous_factory)
+        logging.Logger.makeRecord = previous_make_record
+        target_logger.handlers = previous_handlers
+        target_logger.propagate = previous_propagate
+        target_logger.setLevel(previous_level)
+
+    output = stream.getvalue()
+    assert first_token not in output
+    assert second_token not in output
+    assert output.count("[REDACTED_TELEGRAM_TOKEN]") == 4
+
+
+def test_configure_logging_survives_malformed_message_args(
+    settings_factory: Any,
+) -> None:
+    from tg_max_bridge import service
+
+    token = "999:fake-private-token"
+    stream = io.StringIO()
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    target_logger = logging.getLogger("thirdparty.malformed")
+    previous_factory = logging.getLogRecordFactory()
+    previous_make_record = logging.Logger.makeRecord
+    previous_handlers = target_logger.handlers[:]
+    previous_propagate = target_logger.propagate
+    previous_level = target_logger.level
+    try:
+        service.configure_logging(
+            settings_factory(telegram_bot_token=token, log_level="INFO")
+        )
+        target_logger.handlers = [handler]
+        target_logger.propagate = False
+        target_logger.setLevel(logging.INFO)
+
+        target_logger.info("malformed %s %s", token)
+    finally:
+        logging.setLogRecordFactory(previous_factory)
+        logging.Logger.makeRecord = previous_make_record
+        target_logger.handlers = previous_handlers
+        target_logger.propagate = previous_propagate
+        target_logger.setLevel(previous_level)
+
+    output = stream.getvalue()
+    assert token not in output
+    assert "[REDACTED_TELEGRAM_TOKEN]" in output
