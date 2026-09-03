@@ -11,6 +11,7 @@ RUN apt-get update \
 
 COPY pyproject.toml uv.lock README.md ./
 COPY src ./src
+COPY scripts/docker-entrypoint.sh ./scripts/docker-entrypoint.sh
 
 RUN uv sync --no-dev --frozen
 
@@ -25,6 +26,7 @@ RUN git init /opt/max-mcp \
 
 RUN useradd --create-home --uid 10001 app \
     && mkdir -p /app/data /home/app/.max-mcp \
+    && chmod +x /app/scripts/docker-entrypoint.sh \
     && chown -R app:app /app /home/app
 
 ENV PATH="/app/.venv/bin:${PATH}"
@@ -34,4 +36,5 @@ ENV UV_CACHE_DIR=/tmp/uv-cache
 
 USER app
 
+ENTRYPOINT ["/app/scripts/docker-entrypoint.sh"]
 CMD ["tg-max-bridge", "run"]
