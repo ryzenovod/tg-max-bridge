@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 
 async def run_webhook(
-    application: TelegramApplication,
+    application: TelegramApplication | None,
     dispatcher: Dispatcher,
     outbox: OutboxRepository,
     settings: Settings,
@@ -50,8 +50,9 @@ async def run_webhook(
     webhook_started = False
     runner_started = False
     try:
-        await webhook.start_application()
-        webhook_started = True
+        if settings.telegram_webhook_auto_register:
+            await webhook.start_application()
+            webhook_started = True
         await runner.setup()
         site = web.TCPSite(
             runner,
@@ -60,7 +61,8 @@ async def run_webhook(
         )
         await site.start()
         runner_started = True
-        await webhook.register_webhook()
+        if settings.telegram_webhook_auto_register:
+            await webhook.register_webhook()
         logger.info(
             "Telegram webhook listening on %s:%s",
             settings.telegram_webhook_listen_host,
@@ -79,7 +81,7 @@ class TelegramWebhook:
         self,
         *,
         settings: Settings,
-        application: TelegramApplication,
+        application: TelegramApplication | None,
         dispatcher: Dispatcher,
         outbox: OutboxRepository,
         max_body_size: int | None = None,
@@ -98,6 +100,8 @@ class TelegramWebhook:
         self.application = application
 
     async def start_application(self) -> None:
+        if self._application is None:
+            raise RuntimeError("Telegram application is required for auto-registration")
         await self._application.initialize()
         app_started = False
         try:
@@ -114,6 +118,8 @@ class TelegramWebhook:
             raise RuntimeError("TELEGRAM_WEBHOOK_URL is required in webhook mode")
         if self._secret is None:
             raise RuntimeError("TELEGRAM_WEBHOOK_SECRET is required in webhook mode")
+        if self._application is None:
+            raise RuntimeError("Telegram application is required for auto-registration")
         await self._application.bot.set_webhook(
             url=self._settings.telegram_webhook_url,
             secret_token=self._secret.get_secret_value(),
@@ -122,6 +128,8 @@ class TelegramWebhook:
         )
 
     async def stop(self) -> None:
+        if self._application is None:
+            return
         await self._application.stop()
         await self._application.shutdown()
 
@@ -145,16 +153,27 @@ class TelegramWebhook:
             return web.Response(status=400)
 
         try:
-            update = Update.de_json(payload, self._application.bot)
+            bot = self._application.bot if self._application is not None else None
+            update = Update.de_json(payload, bot)
         except (KeyError, TypeError, ValueError):
             return web.Response(status=400)
         expected_source = _accepted_source(update, self._settings)
 
-        try:
-            await self._application.process_update(update)
-        except Exception:
-            logger.exception("Telegram webhook update processing failed")
-            return web.Response(status=500)
+        if self._settings.telegram_webhook_auto_register:
+            if self._application is None:
+                logger.error("Telegram application missing in auto-registration mode")
+                return web.Response(status=500)
+            try:
+                await self._application.process_update(update)
+            except Exception:
+                logger.exception("Telegram webhook update processing failed")
+                return web.Response(status=500)
+        elif expected_source is not None:
+            try:
+                payload = build_max_payload(expected_source, self._settings.max_chat_id)
+            except UnsupportedMessageError:
+                return web.Response(status=200)
+            await self._outbox.enqueue(expected_source, payload)
 
         if expected_source is None:
             return web.Response(status=200)

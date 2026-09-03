@@ -77,6 +77,7 @@ class Settings(MaxDiscoverySettings):
     telegram_bot_username: str | None = None
     telegram_webhook_url: str | None = None
     telegram_webhook_secret: SecretStr | None = None
+    telegram_webhook_auto_register: bool = True
     telegram_webhook_listen_host: str = "0.0.0.0"
     port: int = Field(default=8080, alias="PORT")
     telegram_webhook_max_bytes: int = 1_000_000
@@ -172,4 +173,12 @@ class Settings(MaxDiscoverySettings):
         if missing:
             names = " and ".join(missing)
             raise ValueError(f"{names} required in webhook mode")
+        if (
+            not self.telegram_webhook_auto_register
+            and self.telegram_ack_mode != "never"
+        ):
+            raise ValueError(
+                "TELEGRAM_ACK_MODE=never required when "
+                "TELEGRAM_WEBHOOK_AUTO_REGISTER=false"
+            )
         return self

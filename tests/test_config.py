@@ -179,6 +179,24 @@ def test_webhook_mode_accepts_valid_cloud_settings(monkeypatch, isolated_env):
     assert settings.port == 8080
 
 
+def test_webhook_direct_receiver_requires_ack_never(monkeypatch, isolated_env):
+    from pydantic import ValidationError
+
+    from tg_max_bridge.config import Settings
+
+    monkeypatch.setenv("TELEGRAM_MODE", "webhook")
+    monkeypatch.setenv(
+        "TELEGRAM_WEBHOOK_URL",
+        "https://reserve-bridge.containerapps.ru/telegram/webhook",
+    )
+    monkeypatch.setenv("TELEGRAM_WEBHOOK_SECRET", "valid_secret")
+    monkeypatch.setenv("TELEGRAM_WEBHOOK_AUTO_REGISTER", "false")
+    monkeypatch.setenv("TELEGRAM_ACK_MODE", "errors")
+
+    with pytest.raises(ValidationError, match="TELEGRAM_ACK_MODE=never"):
+        Settings(_env_file=None)
+
+
 @pytest.mark.parametrize(
     "secret",
     [

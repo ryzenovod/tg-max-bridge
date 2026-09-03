@@ -202,7 +202,14 @@ async def run_service(settings: Settings) -> None:
             logger.warning("Recovered %s stale sending outbox row(s)", recovered)
         transport = MaxTransport(settings)
         dispatcher = Dispatcher(outbox, transport, settings)
-        application = build_application(settings, outbox)
+        application = (
+            build_application(settings, outbox)
+            if (
+                settings.telegram_mode != "webhook"
+                or settings.telegram_webhook_auto_register
+            )
+            else None
+        )
         stop_event = asyncio.Event()
         for sig in (signal.SIGINT, signal.SIGTERM):
             try:

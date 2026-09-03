@@ -228,6 +228,8 @@ Telegram повторил запрос позже.
 - env `SQLITE_PATH=/state/bridge.sqlite3`, `HOME=/state/home` и
   `TG_MAX_BRIDGE_BEST_EFFORT_CHMOD=1`,
   `TG_MAX_BRIDGE_ALLOW_SYNTHETIC_UID=1`;
+- при недоступном Telegram API из Cloud.ru:
+  `TELEGRAM_WEBHOOK_AUTO_REGISTER=false` и `TELEGRAM_ACK_MODE=never`;
 - health probe `GET /healthz`.
 
 Cloud.ru рекомендует SQLite на Object Storage только для небольшой/test-нагрузки.
@@ -241,6 +243,8 @@ Webhook-переменные:
 TELEGRAM_MODE=webhook
 TELEGRAM_WEBHOOK_URL=https://service-name.containerapps.ru/telegram/webhook
 TELEGRAM_WEBHOOK_SECRET=replace-with-random-allowed-token
+TELEGRAM_WEBHOOK_AUTO_REGISTER=false
+TELEGRAM_ACK_MODE=never
 SQLITE_PATH=/state/bridge.sqlite3
 HOME=/state/home
 TG_MAX_BRIDGE_BEST_EFFORT_CHMOD=1
@@ -255,6 +259,15 @@ Object Storage не поддерживает Unix `chmod` и может пока
 `EPERM`/`ENOTSUP` при ужесточении прав и принять такой UID после проверок типа
 файла и отсутствия symlink. В обычном окружении режим остаётся строгим. Бакет
 при этом должен оставаться приватным.
+
+Если Cloud.ru не может стабильно ходить к Telegram Bot API, выключите
+`TELEGRAM_WEBHOOK_AUTO_REGISTER`. В таком режиме контейнер на старте не вызывает
+`getMe`/`setWebhook`, а только принимает уже настроенные Telegram webhook-запросы,
+проверяет secret header, кладёт подходящую команду `/max` в outbox и делает
+доставку в MAX. Telegram webhook тогда нужно выставить один раз с доверенной
+машины, где Bot API доступен. Для этого режима обязателен
+`TELEGRAM_ACK_MODE=never`, потому что ответы в Telegram тоже требуют исходящего
+доступа к Bot API.
 
 Webhook secret передаётся Telegram как
 `X-Telegram-Bot-Api-Secret-Token`; допускаются только латинские буквы, цифры,

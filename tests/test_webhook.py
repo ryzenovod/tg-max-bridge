@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import json
+import socket
 from dataclasses import dataclass
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from aiohttp import ClientSession
 
 
 @dataclass
@@ -95,6 +97,31 @@ class FakeOutbox:
         return SimpleNamespace(status=self.statuses[-1])
 
 
+class RecordingOutbox:
+    def __init__(self, *, status: str) -> None:
+        self.status = status
+        self.enqueued: list[tuple[Any, Any]] = []
+        self.seen: set[tuple[int, int, int]] = set()
+
+    async def enqueue(self, source: Any, payload: Any):
+        key = (source.chat_id, source.message_id, payload.chat_id)
+        created = key not in self.seen
+        self.seen.add(key)
+        self.enqueued.append((source, payload))
+        return SimpleNamespace(
+            record=SimpleNamespace(status=self.status),
+            created=created,
+        )
+
+    async def get_by_source(
+        self,
+        tg_chat_id: int,
+        tg_message_id: int,
+        max_chat_id: int,
+    ):
+        return SimpleNamespace(status=self.status)
+
+
 def _accepted_update() -> bytes:
     return json.dumps(
         {
@@ -145,15 +172,17 @@ def _irrelevant_update() -> bytes:
     ).encode()
 
 
-def _settings(settings_factory):
+def _settings(settings_factory, **overrides: Any):
     from pydantic import SecretStr
 
-    return settings_factory(
+    values = dict(
         telegram_mode="webhook",
         telegram_webhook_url="https://reserve-bridge.containerapps.ru/telegram/hook",
         telegram_webhook_secret=SecretStr("valid_secret"),
         telegram_ack_mode="never",
     )
+    values.update(overrides)
+    return settings_factory(**values)
 
 
 def _webhook(settings_factory, *, statuses: list[str]):
@@ -277,3 +306,134 @@ async def test_webhook_startup_sets_secret_webhook_and_cleanup_stops_app(
             "drop_pending_updates": False,
         }
     ]
+
+
+@pytest.mark.parametrize(
+    ("status", "expected_status"),
+    [
+        ("sent", 200),
+        ("pending", 503),
+    ],
+)
+@pytest.mark.asyncio
+async def test_webhook_direct_receiver_enqueues_without_telegram_application(
+    settings_factory,
+    status: str,
+    expected_status: int,
+):
+    from tg_max_bridge.webhook import TelegramWebhook
+
+    dispatcher = FakeDispatcher(statuses=[status])
+    outbox = RecordingOutbox(status=status)
+    webhook = TelegramWebhook(
+        settings=_settings(
+            settings_factory,
+            telegram_webhook_auto_register=False,
+            telegram_ack_mode="never",
+        ),
+        application=None,
+        dispatcher=dispatcher,
+        outbox=outbox,
+        max_body_size=1024,
+    )
+
+    response = await webhook.handle_update(FakeRequest(body=_accepted_update()))
+
+    assert response.status == expected_status
+    assert dispatcher.calls == 1
+    assert len(outbox.enqueued) == 1
+    source, payload = outbox.enqueued[0]
+    assert source.chat_id == -100111222333
+    assert source.message_id == 123
+    assert payload.chat_id == 777000
+
+
+@pytest.mark.asyncio
+async def test_webhook_direct_receiver_dedupes_through_outbox(settings_factory):
+    from tg_max_bridge.webhook import TelegramWebhook
+
+    dispatcher = FakeDispatcher(statuses=["sent"])
+    outbox = RecordingOutbox(status="sent")
+    webhook = TelegramWebhook(
+        settings=_settings(
+            settings_factory,
+            telegram_webhook_auto_register=False,
+            telegram_ack_mode="never",
+        ),
+        application=None,
+        dispatcher=dispatcher,
+        outbox=outbox,
+        max_body_size=1024,
+    )
+
+    first = await webhook.handle_update(FakeRequest(body=_accepted_update()))
+    second = await webhook.handle_update(FakeRequest(body=_accepted_update()))
+
+    assert [first.status, second.status] == [200, 200]
+    assert [item[0].message_id for item in outbox.enqueued] == [123, 123]
+    assert len(outbox.seen) == 1
+
+
+@pytest.mark.asyncio
+async def test_run_webhook_can_serve_health_without_telegram_startup(
+    settings_factory,
+):
+    from pydantic import SecretStr
+
+    from tg_max_bridge.webhook import run_webhook
+
+    class ExplodingTelegramApplication(FakeTelegramApplication):
+        async def initialize(self) -> None:
+            raise AssertionError("initialize should not be called")
+
+        async def _set_webhook(self, **kwargs: Any) -> None:
+            raise AssertionError("set_webhook should not be called")
+
+    port = _unused_port()
+    settings = settings_factory(
+        telegram_mode="webhook",
+        telegram_webhook_url="https://reserve-bridge.containerapps.ru/telegram/hook",
+        telegram_webhook_secret=SecretStr("valid_secret"),
+        telegram_webhook_auto_register=False,
+        telegram_ack_mode="never",
+        telegram_webhook_listen_host="127.0.0.1",
+        port=port,
+    )
+    stop = asyncio.Event()
+    application = ExplodingTelegramApplication()
+    task = asyncio.create_task(
+        run_webhook(
+            application,
+            FakeDispatcher(statuses=["sent"]),
+            RecordingOutbox(status="sent"),
+            settings,
+            stop,
+        )
+    )
+
+    try:
+        await _wait_for_healthz(port)
+    finally:
+        stop.set()
+        await asyncio.wait_for(task, timeout=1)
+
+    assert application.started is False
+    assert application.webhooks == []
+
+
+def _unused_port() -> int:
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
+
+
+async def _wait_for_healthz(port: int) -> None:
+    async with ClientSession() as session:
+        for _ in range(50):
+            try:
+                async with session.get(f"http://127.0.0.1:{port}/healthz") as response:
+                    if response.status == 200 and await response.text() == "ok\n":
+                        return
+            except OSError:
+                await asyncio.sleep(0.01)
+    raise AssertionError("healthz did not become available")

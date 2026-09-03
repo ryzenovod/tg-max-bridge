@@ -32,9 +32,16 @@ def settings_factory(tmp_path):
     def build(**overrides: Any) -> SimpleNamespace:
         values = {
             "telegram_bot_token": "123:test-token",
+            "telegram_mode": "polling",
             "telegram_allowed_chat_ids": {-100111222333},
             "telegram_allowed_user_ids": {42},
             "telegram_bot_username": "reservebridgebot",
+            "telegram_webhook_url": None,
+            "telegram_webhook_secret": None,
+            "telegram_webhook_auto_register": True,
+            "telegram_webhook_listen_host": "0.0.0.0",
+            "telegram_webhook_max_bytes": 1_000_000,
+            "port": 8080,
             "max_chat_id": 777000,
             "max_mcp_directory": Path("/opt/max-mcp"),
             "max_mcp_command": "uv",
@@ -273,6 +280,7 @@ def isolated_env(monkeypatch, tmp_path):
         "TELEGRAM_MODE",
         "TELEGRAM_WEBHOOK_URL",
         "TELEGRAM_WEBHOOK_SECRET",
+        "TELEGRAM_WEBHOOK_AUTO_REGISTER",
         "PORT",
         "MAX_MCP_SESSION_TARB64",
     ]
