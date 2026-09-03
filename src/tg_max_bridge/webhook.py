@@ -179,7 +179,7 @@ class TelegramWebhook:
             return web.Response(status=200)
 
         async with self._delivery_lock:
-            await self._dispatcher.process_once()
+            await self._dispatcher.process_once(close_transport=True)
             record = await self._outbox.get_by_source(
                 expected_source.chat_id,
                 expected_source.message_id,

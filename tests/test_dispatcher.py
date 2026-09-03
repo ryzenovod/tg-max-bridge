@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -155,6 +156,96 @@ async def test_process_once_timeout_marks_ambiguous(
 
     assert repo.ambiguous == [(1, "send timed out", now_ms)]
     assert repo.retried == []
+
+
+@pytest.mark.asyncio
+async def test_process_once_can_close_transport_after_success(
+    sample_payload, settings_factory, now_ms
+):
+    from tg_max_bridge.models import MaxSendResult
+
+    class TaskTrackingTransport:
+        send_task: asyncio.Task | None = None
+        stop_task: asyncio.Task | None = None
+
+        async def send_text(self, chat_id, text):
+            self.send_task = asyncio.current_task()
+            return MaxSendResult(message_id=999, raw={"message_id": 999})
+
+        async def stop(self):
+            self.stop_task = asyncio.current_task()
+
+    repo = FakeRepo([row(sample_payload)])
+    transport = TaskTrackingTransport()
+    dispatcher = build_dispatcher(repo, transport, settings_factory())
+
+    await dispatcher.process_once(now_ms=now_ms, close_transport=True)
+
+    assert transport.stop_task is not None
+    assert transport.stop_task is transport.send_task
+    assert repo.sent[0][1].message_id == 999
+
+
+@pytest.mark.asyncio
+async def test_process_once_can_close_transport_after_handled_failure(
+    sample_payload, settings_factory, now_ms
+):
+    class TaskTrackingTransport:
+        send_task: asyncio.Task | None = None
+        stop_task: asyncio.Task | None = None
+
+        async def send_text(self, chat_id, text):
+            self.send_task = asyncio.current_task()
+            raise RuntimeError("temporary MCP failure")
+
+        async def stop(self):
+            self.stop_task = asyncio.current_task()
+
+    repo = FakeRepo([row(sample_payload)])
+    transport = TaskTrackingTransport()
+    dispatcher = build_dispatcher(repo, transport, settings_factory())
+
+    await dispatcher.process_once(now_ms=now_ms, close_transport=True)
+
+    assert transport.stop_task is not None
+    assert transport.stop_task is transport.send_task
+    assert repo.retried == [(1, "temporary MCP failure", now_ms)]
+
+
+@pytest.mark.asyncio
+async def test_process_once_can_close_transport_after_cancellation(
+    sample_payload, settings_factory, now_ms
+):
+    entered = asyncio.Event()
+    stopped = asyncio.Event()
+
+    class TaskTrackingTransport:
+        send_task: asyncio.Task | None = None
+        stop_task: asyncio.Task | None = None
+
+        async def send_text(self, chat_id, text):
+            self.send_task = asyncio.current_task()
+            entered.set()
+            await asyncio.Future()
+
+        async def stop(self):
+            self.stop_task = asyncio.current_task()
+            stopped.set()
+
+    repo = FakeRepo([row(sample_payload)])
+    transport = TaskTrackingTransport()
+    dispatcher = build_dispatcher(repo, transport, settings_factory())
+    task = asyncio.create_task(
+        dispatcher.process_once(now_ms=now_ms, close_transport=True)
+    )
+
+    await entered.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+
+    assert stopped.is_set()
+    assert transport.stop_task is transport.send_task
 
 
 @pytest.mark.asyncio

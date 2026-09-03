@@ -71,9 +71,11 @@ class FakeDispatcher:
         self.calls = 0
         self.running = 0
         self.max_running = 0
+        self.close_transport_flags: list[bool] = []
 
-    async def process_once(self) -> int:
+    async def process_once(self, *, close_transport: bool = False) -> int:
         self.calls += 1
+        self.close_transport_flags.append(close_transport)
         self.running += 1
         self.max_running = max(self.max_running, self.running)
         try:
@@ -249,6 +251,7 @@ async def test_webhook_accepted_update_returns_2xx_only_after_sent(settings_fact
 
     assert 200 <= response.status < 300
     assert dispatcher.calls == 1
+    assert dispatcher.close_transport_flags == [True]
 
 
 @pytest.mark.parametrize("status", ["pending", "ambiguous"])
