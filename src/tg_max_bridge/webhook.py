@@ -158,16 +158,7 @@ class TelegramWebhook:
             return web.Response(status=400)
         expected_source = _accepted_source(update, self._settings)
 
-        if self._settings.telegram_webhook_auto_register:
-            if self._application is None:
-                logger.error("Telegram application missing in auto-registration mode")
-                return web.Response(status=500)
-            try:
-                await self._application.process_update(update)
-            except Exception:
-                logger.exception("Telegram webhook update processing failed")
-                return web.Response(status=500)
-        elif expected_source is not None:
+        if expected_source is not None:
             try:
                 payload = build_max_payload(expected_source, self._settings.max_chat_id)
             except UnsupportedMessageError:

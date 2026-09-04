@@ -310,6 +310,31 @@ symlink. В обычном окружении режим остаётся стр
 `TELEGRAM_ACK_MODE=never`, потому что ответы в Telegram тоже требуют исходящего
 доступа к Bot API.
 
+### Cloudflare Worker relay
+
+Если Telegram плохо достучивается напрямую до `*.containerapps.ru`, поставьте
+перед Cloud.ru stateless Cloudflare Worker из `worker/cloudflare-relay`.
+Telegram webhook URL должен указывать на Worker:
+`https://<worker-name>.<account>.workers.dev/telegram/webhook`, а переменная
+Worker-а `ORIGIN_WEBHOOK_URL` — на Cloud.ru endpoint
+`https://tg-max-bridge-5435cb52.containerapps.ru/telegram/webhook`.
+
+Worker не знает Telegram bot token и webhook secret, не читает тело update-а и
+ничего не хранит. Он передаёт в Cloud.ru только `Content-Type` и
+`X-Telegram-Bot-Api-Secret-Token`, возвращает Telegram тот же статус и тело,
+которые вернул Cloud.ru. Поэтому `503` от Worker-а в этом режиме — ожидаемый
+сигнал для Telegram повторить доставку, пока Cloud.ru не отметит сообщение как
+доставленное в MAX и не начнёт отвечать `200`.
+
+Пример локальной подготовки:
+
+```bash
+cd worker/cloudflare-relay
+cp wrangler.toml.example wrangler.toml
+npm run check
+npm run deploy
+```
+
 При `min_instances=0` без внешнего scheduler-а абсолютной гарантии доставки
 после уже принятого `200` нет: если контейнер погас после локальной записи, но
 до отправки в MAX, будить его будет некому. Поэтому webhook держит Telegram
