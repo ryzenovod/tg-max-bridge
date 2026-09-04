@@ -1,0 +1,7 @@
+name = "tg-max-bridge-relay"
+main = "src/worker.js"
+compatibility_date = "2026-09-04"
+workers_dev = true
+
+[vars]
+ORIGIN_WEBHOOK_URL = "https://tg-max-bridge-5435cb52.containerapps.ru/telegram/webhook"

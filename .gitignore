@@ -15,3 +15,5 @@ __pycache__/
 .DS_Store
 .max-mcp/
 .telegram-session/
+worker/cloudflare-relay/.wrangler/
+worker/cloudflare-relay/node_modules/

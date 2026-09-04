@@ -100,6 +100,15 @@ class BlockingDispatcher:
 class FakeOutbox:
     def __init__(self, *, statuses: list[str]) -> None:
         self.statuses = statuses
+        self.enqueued: list[tuple[Any, Any]] = []
+
+    async def enqueue(self, source: Any, payload: Any):
+        self.enqueued.append((source, payload))
+        status = self.statuses[-1] if self.statuses else "pending"
+        return SimpleNamespace(
+            record=SimpleNamespace(status=status),
+            created=True,
+        )
 
     async def get_by_source(
         self,
@@ -317,6 +326,36 @@ async def test_webhook_accepted_update_returns_fast_retryable_without_dispatch_w
 
     response = await asyncio.wait_for(
         webhook.handle_update(FakeRequest(body=_accepted_update())),
+        timeout=0.05,
+    )
+
+    assert response.status == 503
+    assert dispatcher.calls == 0
+    assert len(outbox.enqueued) == 1
+
+
+@pytest.mark.asyncio
+async def test_webhook_auto_register_does_not_process_update_in_request_path(
+    settings_factory,
+):
+    from tg_max_bridge.webhook import TelegramWebhook
+
+    class ExplodingProcessUpdateApplication(FakeTelegramApplication):
+        async def process_update(self, update: Any) -> None:
+            raise AssertionError("process_update should not run in webhook request")
+
+    dispatcher = BlockingDispatcher()
+    outbox = RecordingOutbox(status="pending")
+    webhook = TelegramWebhook(
+        settings=_settings(settings_factory, telegram_webhook_auto_register=True),
+        application=ExplodingProcessUpdateApplication(),
+        dispatcher=dispatcher,
+        outbox=outbox,
+        max_body_size=1024,
+    )
+
+    response = await asyncio.wait_for(
+        webhook.handle_update(FakeRequest(body=_marker_update())),
         timeout=0.05,
     )
 
