@@ -5,6 +5,12 @@ from types import SimpleNamespace
 import pytest
 
 
+def test_forward_allowed_updates_covers_messages_and_edits():
+    from tg_max_bridge.telegram_bot import FORWARD_ALLOWED_UPDATES
+
+    assert list(FORWARD_ALLOWED_UPDATES) == ["message", "edited_message"]
+
+
 def assert_rejected(result) -> None:
     from tg_max_bridge.models import TelegramSourceMessage
 
@@ -143,6 +149,44 @@ def test_extract_marker_trigger_accepts_group_marker_from_any_user(settings_fact
     assert result.chat_id == -100111222333
     assert result.message_id == 789
     assert result.trigger_message_id == 789
+    assert result.from_user_id == 777
+    assert result.from_display_name == "Class Rep"
+    assert result.text == "Meet at entrance B"
+
+
+def test_extract_marker_trigger_accepts_edited_message_from_telegram_update(
+    settings_factory,
+):
+    from telegram import Update
+
+    from tg_max_bridge.models import TelegramSourceMessage
+    from tg_max_bridge.telegram_bot import extract_marker_trigger
+
+    update = Update.de_json(
+        {
+            "update_id": 1004,
+            "edited_message": {
+                "message_id": 790,
+                "date": 1_788_342_600,
+                "edit_date": 1_788_342_660,
+                "chat": {"id": -100111222333, "type": "supergroup"},
+                "from": {
+                    "id": 777,
+                    "is_bot": False,
+                    "first_name": "Class Rep",
+                },
+                "text": "Meet at entrance B #max",
+            },
+        },
+        bot=None,
+    )
+
+    result = extract_marker_trigger(update, settings_factory())
+
+    assert isinstance(result, TelegramSourceMessage)
+    assert result.chat_id == -100111222333
+    assert result.message_id == 790
+    assert result.trigger_message_id == 790
     assert result.from_user_id == 777
     assert result.from_display_name == "Class Rep"
     assert result.text == "Meet at entrance B"

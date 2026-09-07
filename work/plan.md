@@ -1,105 +1,75 @@
 ## Approach
 
-Put a very small Cloudflare Worker in front of the existing Cloud.ru webhook and move Telegram's configured webhook URL from `https://*.containerapps.ru/telegram/webhook` to the Worker URL. The Worker must not parse, persist, log, or authenticate Telegram messages; it only accepts `POST /telegram/webhook`, streams the original body to one fixed Cloud.ru origin URL, forwards `X-Telegram-Bot-Api-Secret-Token` unchanged, and returns the Cloud.ru HTTP status/body/selected safe headers unchanged so Telegram keeps its normal retry behavior. Cloud.ru remains the only stateful component: it still authenticates the secret header, writes SQLite outbox rows, returns `503` until MAX delivery is marked `sent`, and returns `200` afterward. This directly addresses the observed Telegram-to-Cloud.ru reachability problem without introducing a second queue, secret copy, or message store.
+Fix the production miss by treating Telegram edits as first-class forwarding triggers while keeping the existing durable outbox as the only delivery queue. The screenshot shows a `#max` message marked `edited`, and the current code registers/requests only `message` updates, so a marker added by editing an existing Telegram message can be invisible to the bridge. Add `edited_message` everywhere the bridge declares accepted Telegram update types, let the existing `Update.effective_message` extraction path parse it, and rely on the existing outbox uniqueness key `(tg_chat_id, tg_message_id, max_chat_id)` to avoid duplicate MAX posts from retries or repeated edits. Separately, make the deployment/runbook explicit that the old local macOS polling LaunchAgent must stay stopped/disabled for this bot token, because Telegram long polling disables/competes with the cloud webhook.
 
 ## Change list
 
-- `worker/cloudflare-relay/src/worker.js` — add a module Worker exporting `default.fetch(request, env, ctx)`. It handles only `POST /telegram/webhook`, rejects other methods/paths locally, validates `env.ORIGIN_WEBHOOK_URL` as an HTTPS URL ending in `/telegram/webhook`, creates a new fixed-origin request with the original method/body and pass-through headers, calls `fetch()` with a short origin timeout, and returns Cloud.ru's status/body. It must not call `request.json()`, must not log request bodies or secret headers, and must not store anything in KV/D1/Cache.
-- `worker/cloudflare-relay/test/worker.test.js` — add native `node:test` coverage with a stubbed `fetch`: pass-through secret header and body, Cloud.ru `200` preserved, Cloud.ru `503` preserved, wrong method/path rejected before origin fetch, origin URL validation rejects non-HTTPS/wrong path, and origin network failure maps to a retryable `503`.
-- `worker/cloudflare-relay/package.json` — add minimal ESM metadata and scripts: `test` for `node --test test/*.test.js`, and optional `deploy`/`dev` wrappers around `wrangler`. Do not add runtime dependencies.
-- `worker/cloudflare-relay/wrangler.toml.example` — add a checked-in example, not a live deployment config with secrets. Include `main = "src/worker.js"`, `compatibility_date`, `workers_dev = true` or route placeholders, and `[vars] ORIGIN_WEBHOOK_URL = "https://tg-max-bridge-5435cb52.containerapps.ru/telegram/webhook"`. No Telegram token or webhook secret belongs here.
-- `.gitignore` — if implementation uses local Wrangler state in this repo, ignore only local Worker artifacts such as `worker/cloudflare-relay/.wrangler/` and `worker/cloudflare-relay/node_modules/`. Do not ignore broad directories.
-- `README.md` — add a short "Cloudflare Worker relay" subsection under Cloud.ru deployment. Document that Telegram webhook URL should point at the Worker, the Worker origin points at Cloud.ru `/telegram/webhook`, the Worker does not know the secret, and `503` is intentional because it preserves Telegram retries until Cloud.ru reports delivery.
-- `src/tg_max_bridge/webhook.py` and `tests/test_webhook.py` — keep the current uncommitted hardening direction: webhook request path enqueues directly even with `TELEGRAM_WEBHOOK_AUTO_REGISTER=true`, does not call `process_update()`, and returns `503` for accepted non-`sent` rows. The Worker plan depends on this contract and must not revert it.
+- `src/tg_max_bridge/telegram_bot.py` - add a module-level public constant for forwarding update types, e.g. `FORWARD_ALLOWED_UPDATES: tuple[str, ...] = ("message", "edited_message")`, and use it from application-facing code/tests instead of scattering `Update.MESSAGE`. No change is needed to `extract_trigger()` or `extract_marker_trigger()` if `Update.effective_message` already resolves edited messages after `Update.de_json()`.
+- `src/tg_max_bridge/webhook.py` - change `TelegramWebhook.register_webhook()` to pass `allowed_updates=list(FORWARD_ALLOWED_UPDATES)` so Telegram delivers both original messages and edits to the Cloudflare/Cloud.ru webhook.
+- `src/tg_max_bridge/service.py` - change polling mode `_run_polling()` to use the same `FORWARD_ALLOWED_UPDATES` list. This keeps local/manual polling behavior equivalent to webhook mode, while documentation must still say not to run polling with the production token at the same time as cloud webhook.
+- `src/tg_max_bridge/cli.py` - change `_discover_telegram()` to use the same allowed-update list, or deliberately leave discovery as `message` only and document that choice in the test. Prefer sharing the constant so future `allowed_updates` changes do not drift.
+- `tests/test_webhook.py` - add an `edited_message` fixture/update body and direct receiver coverage proving that an edited group message containing `#max` is accepted, stripped, enqueued, and returns the same `200`/`503` behavior as a normal message. Update the webhook registration assertion to expect `["message", "edited_message"]`.
+- `tests/test_service.py` - update polling startup assertions to expect both allowed update types.
+- `tests/test_cli.py` - update Telegram discovery assertions if `_discover_telegram()` shares the new constant.
+- `tests/test_outbox.py` or existing webhook/outbox dedupe tests - add or extend a test proving that a normal `message` update and a later `edited_message` update for the same `chat_id/message_id/max_chat_id` produce one persistent outbox row, not two MAX deliveries.
+- `README.md` - update the Cloud.ru/Cloudflare webhook setup command from `allowed_updates=["message"]` to `allowed_updates=["message","edited_message"]`; add a short operational note: if `#max` is added by editing a Telegram message, it is supported only after this webhook setting is live, and the local `com.ryzenovod.tg-max-bridge` LaunchAgent must remain unloaded/disabled for the production bot token.
 
 ## Interfaces
 
-`worker/cloudflare-relay/src/worker.js`
+Telegram update-type contract:
 
-```js
-export default {
-  async fetch(request, env, ctx) { ... }
-}
+```python
+FORWARD_ALLOWED_UPDATES: tuple[str, ...] = ("message", "edited_message")
 ```
 
-Worker request contract:
+- The constant is the single source of truth for webhook registration, polling startup, and optionally Telegram discovery.
+- Values are Telegram Bot API update type strings, not enum objects, so `list(FORWARD_ALLOWED_UPDATES)` can be passed directly to `bot.set_webhook(..., allowed_updates=...)`, `Application.updater.start_polling(..., allowed_updates=...)`, and `Bot.get_updates(..., allowed_updates=...)`.
+- Ordering is stable: `["message", "edited_message"]`. Tests should assert exact order to catch accidental drift in docs and setup commands.
 
-- Accept only `POST` to path `/telegram/webhook`.
-- Return `405` for other methods on `/telegram/webhook`.
-- Return `404` for other paths.
-- Do not parse the Telegram update body. Forward the body stream/bytes exactly once to Cloud.ru.
-- Forward `X-Telegram-Bot-Api-Secret-Token` unchanged if present. Do not read it into logs, variables used for diagnostics, or error responses.
-- Forward safe request headers needed by origin: at minimum `content-type` and `x-telegram-bot-api-secret-token`. Do not forward client-controlled `host`, `cf-*`, `x-forwarded-*`, or arbitrary hop-by-hop headers.
-- Use only a fixed `env.ORIGIN_WEBHOOK_URL`; never derive the upstream host/path from the inbound request.
+Extraction contract for edited messages:
 
-Worker origin response contract:
+- An update with top-level key `edited_message` and an allowed group chat is processed through the same `_accepted_source() -> extract_trigger()/extract_marker_trigger()` path as top-level `message`.
+- `extract_marker_trigger()` accepts edited text/caption containing the configured marker, strips the marker from the outbound MAX text, and sets both `TelegramSourceMessage.message_id` and `trigger_message_id` to the edited Telegram message id.
+- If an edited message does not contain the marker or valid `/max` inline text, webhook returns `200` and does not enqueue.
+- If a message was already queued/sent from the same Telegram `chat_id/message_id` to the same MAX chat, a later edit must not create a second outbox row. The existing DB uniqueness key is the dedupe boundary.
 
-- If Cloud.ru returns `200`, Worker returns `200` to Telegram.
-- If Cloud.ru returns `503`, Worker returns `503` to Telegram.
-- If Cloud.ru returns `400`, `403`, or `413`, Worker preserves that status so bad Telegram deliveries are not masked.
-- If the origin fetch times out or throws, Worker returns a retryable `503` with a small plain-text body such as `origin unavailable\n`.
-- Do not cache origin responses.
+Webhook response contract to preserve:
 
-`env.ORIGIN_WEBHOOK_URL`
+- Accepted edited updates enqueue before response, exactly like accepted normal message updates.
+- If the outbox row is already `sent`, return `200`.
+- If the outbox row is `pending`, `sending`, or `ambiguous`, return `503` so Telegram keeps retrying and waking Cloud.ru until MAX delivery is confirmed.
+- Invalid secret stays `403`; invalid JSON stays `400`; oversize body stays `413`.
 
-- Required.
-- Must parse as `https:`.
-- Must end exactly with `/telegram/webhook`.
-- Should be the Cloud.ru endpoint: `https://tg-max-bridge-5435cb52.containerapps.ru/telegram/webhook`.
-- Is not a secret; it may live in `wrangler.toml` vars.
-
-Existing Cloud.ru webhook contract to preserve:
-
-- `X-Telegram-Bot-Api-Secret-Token` remains validated only by `TelegramWebhook._authorized()`.
-- Accepted `/max` or `#max` messages are durably enqueued in SQLite before returning.
-- Accepted rows in `pending`, `sending`, or `ambiguous` return `503`.
-- Already `sent` rows return `200`.
-- MAX delivery is done only by the background dispatcher, not inside the HTTP request path.
-
-Terminal deployment steps for implementer:
-
-```bash
-cd /Users/ryzenovod/tg-max-bridge/worker/cloudflare-relay
-npm test
-npx wrangler login
-npx wrangler deploy --var ORIGIN_WEBHOOK_URL:https://tg-max-bridge-5435cb52.containerapps.ru/telegram/webhook
-```
-
-After deploy, set Telegram webhook from a machine where Bot API is reachable:
+Deployment/runbook contract:
 
 ```bash
 curl -fsS "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook" \
-  -F "url=https://<worker-name>.<account>.workers.dev/telegram/webhook" \
+  -F "url=https://tg-max-bridge-relay.belousov-carp.workers.dev/telegram/webhook" \
   -F "secret_token=${TELEGRAM_WEBHOOK_SECRET}" \
-  -F 'allowed_updates=["message"]' \
+  -F 'allowed_updates=["message","edited_message"]' \
   -F "drop_pending_updates=false"
 ```
 
-Then verify without printing secrets:
-
-```bash
-curl -fsS "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/getWebhookInfo" \
-  | jq '{ok, url: .result.url, pending_update_count: .result.pending_update_count, last_error_date: .result.last_error_date, last_error_message: .result.last_error_message}'
-```
+- After setting the webhook, verify `getWebhookInfo.result.url` is the Cloudflare Worker URL and `getWebhookInfo.result.allowed_updates` includes both `message` and `edited_message`.
+- The macOS LaunchAgent using the same Telegram bot token must be stopped and disabled before/after webhook registration; otherwise polling can delete or consume cloud webhook updates. The runbook should name the known label/path: `com.ryzenovod.tg-max-bridge` / `~/Library/LaunchAgents/com.ryzenovod.tg-max-bridge.plist`.
+- Redeploy Cloud.ru with the code change before setting the new webhook allowed updates, so Telegram does not send edited updates to an old container that lacks test coverage for the path.
 
 ## Risks
 
-- Cloudflare Worker fixes the inbound Telegram-to-Cloud.ru path, but it does not fix Cloud.ru outbound access to Telegram Bot API. That is acceptable only while `TELEGRAM_WEBHOOK_AUTO_REGISTER=false` and `TELEGRAM_ACK_MODE=never`; webhook registration continues to be done externally.
-- Worker must preserve Cloud.ru `503`. Converting origin `503` to `200` would silently break the at-least-once wake/retry design.
-- Worker must not persist or inspect Telegram bodies. Adding KV/D1/Queues would create a second delivery system and a new privacy/security surface.
-- A Worker origin timeout may cause Telegram retries even if Cloud.ru eventually processes the request after the Worker gives up. Existing outbox idempotency by `(tg_chat_id, tg_message_id, max_chat_id)` and MAX marker reconciliation are the required dedupe boundary.
-- Cloud.ru SQLite on Object Storage remains single-instance only. Keep Cloud.ru `max_instances=1`; do not scale horizontally to compensate for retry traffic.
-- Wrangler deployment may require the user to complete browser login or provide Cloudflare account selection. That is an operator step, not a code design issue.
+- Telegram only sends future update types according to the current webhook configuration; a message edited while `allowed_updates=["message"]` was active may not be recoverable from Telegram's pending queue. Acceptance must use a fresh edit/test after updating webhook config.
+- If the local LaunchAgent is started again with polling mode and the production bot token, it can still disrupt the cloud webhook. Code changes cannot fully prevent this unless polling is made opt-in or the operator uses a separate dev bot token; for this fix, the minimal control is explicit disablement and verification.
+- Immutable outbox rows mean a later edit to an already queued message will not update the MAX text or send a correction. That is intentional minimal behavior for exactly-once forwarding; supporting MAX edits/correction messages would be separate scope.
+- Cloud.ru scale-to-zero reliability still depends on preserving the existing `503 until sent` behavior through Cloudflare. This plan must not convert retryable `503` responses to `200`.
+- If python-telegram-bot's `MessageHandler` does not invoke handlers for edited messages in polling mode despite `allowed_updates`, implementation may need a separate edited-message handler with the same callback. Webhook direct parsing via `Update.effective_message` remains the primary production path.
 
 ## Acceptance criteria
 
-- Telegram webhook URL points to the Cloudflare Worker, not directly to `*.containerapps.ru`.
-- A test `#max` update reaches Cloud.ru through Worker and appears in MAX after dispatcher delivery.
-- Worker test proves an origin `503` is returned to Telegram as `503`.
-- Worker test proves an origin `200` is returned to Telegram as `200`.
-- Worker test proves `X-Telegram-Bot-Api-Secret-Token` is forwarded unchanged and not required as a Worker env var.
-- Worker test proves invalid paths/methods do not contact Cloud.ru.
-- Worker test proves origin network failure returns retryable `503`.
-- `getWebhookInfo` shows the Worker URL and no continuing `last_error_message` after a successful sent duplicate gets `200`.
-- No Telegram bot token, MAX credentials/session, or webhook secret is added to Worker files, Wrangler vars, tests, logs, or README examples.
-- Test-author can work in parallel with implementer because the Worker HTTP contract, origin status mapping, env var contract, and existing Cloud.ru webhook contract are fixed.
+- A fresh Telegram message sent originally as `text #max` is enqueued and delivered to MAX through the existing Cloudflare Worker and Cloud.ru webhook path.
+- A Telegram message sent without `#max`, then edited to append `#max`, is enqueued and delivered to MAX.
+- Repeated Telegram retries or repeated edits of the same `chat_id/message_id` do not produce duplicate outbox rows or duplicate MAX posts.
+- `TelegramWebhook.register_webhook()` calls `set_webhook(..., allowed_updates=["message", "edited_message"], drop_pending_updates=False)`.
+- Polling startup uses the same allowed update list.
+- README setup commands show `allowed_updates=["message","edited_message"]`.
+- Production `getWebhookInfo` after deployment shows the Cloudflare Worker URL and both allowed update types.
+- The local LaunchAgent for the same production bot token is not loaded/enabled when the cloud webhook is active.
+- Existing tests for normal `/max`, normal `#max`, webhook authorization, outbox retry/503 behavior, Cloudflare relay status preservation, and dispatcher delivery still pass.

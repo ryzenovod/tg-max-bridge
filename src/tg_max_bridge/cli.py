@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
-from telegram import Bot, Update
+from telegram import Bot
 
 from .config import MaxDiscoverySettings, Settings, TelegramDiscoverySettings
 from .db import connect, init_schema
@@ -15,6 +15,7 @@ from .max_transport import MaxTransport
 from .models import OutboxStatus
 from .outbox import OutboxRepository
 from .service import configure_logging, run_service
+from .telegram_bot import FORWARD_ALLOWED_UPDATES
 
 app = typer.Typer(no_args_is_help=True)
 logger = logging.getLogger(__name__)
@@ -157,7 +158,7 @@ async def _discover_telegram(
         updates = await bot.get_updates(
             limit=limit,
             timeout=0,
-            allowed_updates=[Update.MESSAGE],
+            allowed_updates=list(FORWARD_ALLOWED_UPDATES),
         )
 
     shown: set[tuple[int, int | None]] = set()

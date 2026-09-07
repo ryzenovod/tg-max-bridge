@@ -143,6 +143,9 @@ uv run tg-max-bridge run
 BotFather (`/setprivacy`), а затем удалить бота из существующей группы и добавить
 заново. Если Privacy Mode оставлен включённым, используйте `/max текст` —
 Telegram доставляет команды боту и в этом режиме.
+Метка, добавленная редактированием уже отправленного сообщения, тоже
+поддерживается, если Telegram webhook настроен на update types `message` и
+`edited_message`.
 
 Сначала сообщение атомарно попадает в SQLite, и только потом бот подтверждает
 постановку в очередь. Повторная команда для того же сообщения не создаёт вторую
@@ -345,6 +348,22 @@ Webhook secret передаётся Telegram как
 `X-Telegram-Bot-Api-Secret-Token`; допускаются только латинские буквы, цифры,
 `_`, `.` и `-`, длина 32-256 символов. URL должен быть HTTPS.
 
+Webhook выставляется один раз с машины, где доступен Telegram Bot API:
+
+```bash
+curl -fsS "https://api.telegram.org/bot${TELEGRAM_BOT_TOKEN}/setWebhook" \
+  -F "url=https://<worker-name>.<account>.workers.dev/telegram/webhook" \
+  -F "secret_token=${TELEGRAM_WEBHOOK_SECRET}" \
+  -F 'allowed_updates=["message","edited_message"]' \
+  -F "drop_pending_updates=false"
+```
+
+После этого проверьте `getWebhookInfo`: URL должен указывать на Cloudflare
+Worker, а `allowed_updates` должен содержать `message` и `edited_message`.
+Сообщение, отредактированное до применения этой настройки, Telegram может уже не
+переотправить; для проверки сделайте новое редактирование или новое сообщение с
+`#max`.
+
 MAX-сессию в облаке не кладите в образ. Сделайте локально gzip-tar только из
 ожидаемых файлов сессии и положите результат в secret env
 `MAX_MCP_SESSION_TARB64`:
@@ -362,15 +381,21 @@ tar -C "$HOME" -czf - \
 `0700/0600` там, где файловая система это поддерживает, и удалит
 `MAX_MCP_SESSION_TARB64` из окружения перед запуском моста.
 
-Перед установкой cloud webhook остановите локальный LaunchAgent, иначе локальный
-polling и webhook будут конкурировать за Telegram updates:
+Перед установкой cloud webhook остановите и отключите локальный LaunchAgent
+`com.ryzenovod.tg-max-bridge`, иначе его polling удалит cloud webhook и начнёт
+забирать Telegram updates на Mac:
 
 ```bash
-launchctl unload "$HOME/Library/LaunchAgents/com.ryzenovod.tg-max-bridge.plist"
+launchctl bootout "gui/$(id -u)" \
+  "$HOME/Library/LaunchAgents/com.ryzenovod.tg-max-bridge.plist" 2>/dev/null || true
+launchctl disable "gui/$(id -u)/com.ryzenovod.tg-max-bridge"
 ```
 
-Откат: удалите webhook у Telegram Bot API и снова загрузите LaunchAgent:
+Откат: удалите webhook у Telegram Bot API, снова разрешите LaunchAgent и
+загрузите его:
 
 ```bash
-launchctl load "$HOME/Library/LaunchAgents/com.ryzenovod.tg-max-bridge.plist"
+launchctl enable "gui/$(id -u)/com.ryzenovod.tg-max-bridge"
+launchctl bootstrap "gui/$(id -u)" \
+  "$HOME/Library/LaunchAgents/com.ryzenovod.tg-max-bridge.plist"
 ```
