@@ -18,6 +18,8 @@ from .formatting import UnsupportedMessageError, build_max_payload
 from .models import RejectReason, TelegramSourceMessage
 from .outbox import OutboxRepository
 
+FORWARD_ALLOWED_UPDATES: tuple[str, ...] = ("message", "edited_message")
+
 
 def extract_trigger(
     update: Update, settings: Settings

@@ -82,6 +82,7 @@ async def test_discover_telegram_prints_chat_and_user_ids(
     from telegram import Chat, Message, Update, User
 
     from tg_max_bridge import cli
+    from tg_max_bridge.telegram_bot import FORWARD_ALLOWED_UPDATES
 
     update = Update(
         update_id=1,
@@ -116,7 +117,7 @@ async def test_discover_telegram_prints_chat_and_user_ids(
             assert kwargs == {
                 "limit": 10,
                 "timeout": 0,
-                "allowed_updates": [Update.MESSAGE],
+                "allowed_updates": list(FORWARD_ALLOWED_UPDATES),
             }
             return (update, update)
 
@@ -182,6 +183,16 @@ def test_operator_docs_and_examples_do_not_contain_real_secrets_or_sessions():
         assert "MAX_CHAT_ID=123456789" not in text or path.name == ".env.example"
 
     assert not list(root.rglob("session.db"))
+
+
+def test_operator_docs_show_edited_message_webhook_registration():
+    root = Path(__file__).resolve().parents[1]
+    readme = (root / "README.md").read_text(encoding="utf-8")
+
+    assert 'allowed_updates=["message","edited_message"]' in readme
+    assert "getWebhookInfo" in readme
+    assert "edited_message" in readme
+    assert "com.ryzenovod.tg-max-bridge" in readme
 
 
 def test_run_command_logs_sanitized_exception_without_reraising_raw_traceback(

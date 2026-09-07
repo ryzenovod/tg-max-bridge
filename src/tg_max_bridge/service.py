@@ -12,7 +12,7 @@ from .dispatcher import Dispatcher
 from .max_transport import MaxTransport
 from .outbox import OutboxRepository
 from .outbox import now_ms as current_time_ms
-from .telegram_bot import build_application
+from .telegram_bot import FORWARD_ALLOWED_UPDATES, build_application
 from .webhook import run_webhook
 
 logger = logging.getLogger(__name__)
@@ -272,7 +272,6 @@ async def run_service(settings: Settings) -> None:
 async def _run_polling(
     application: object, settings: Settings, stop: asyncio.Event
 ) -> None:
-    from telegram import Update
     from telegram.ext import Application
 
     if not isinstance(application, Application):
@@ -287,7 +286,7 @@ async def _run_polling(
                 raise RuntimeError("Telegram application has no updater")
             await application.updater.start_polling(
                 timeout=settings.poll_timeout_seconds,
-                allowed_updates=[Update.MESSAGE],
+                allowed_updates=list(FORWARD_ALLOWED_UPDATES),
                 drop_pending_updates=False,
             )
             updater_started = True

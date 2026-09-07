@@ -235,6 +235,31 @@ def _marker_update() -> bytes:
     ).encode()
 
 
+def _edited_marker_update(
+    *,
+    update_id: int = 1004,
+    message_id: int = 790,
+    text: str = "Meet at entrance B #max",
+) -> bytes:
+    return json.dumps(
+        {
+            "update_id": update_id,
+            "edited_message": {
+                "message_id": message_id,
+                "date": 1_788_342_600,
+                "edit_date": 1_788_342_660,
+                "chat": {"id": -100111222333, "type": "supergroup"},
+                "from": {
+                    "id": 777,
+                    "is_bot": False,
+                    "first_name": "Class Rep",
+                },
+                "text": text,
+            },
+        }
+    ).encode()
+
+
 def _settings(settings_factory, **overrides: Any):
     from pydantic import SecretStr
 
@@ -428,7 +453,7 @@ async def test_webhook_startup_sets_secret_webhook_and_cleanup_stops_app(
         {
             "url": "https://reserve-bridge.containerapps.ru/telegram/hook",
             "secret_token": "valid_secret",
-            "allowed_updates": ["message"],
+            "allowed_updates": ["message", "edited_message"],
             "drop_pending_updates": False,
         }
     ]
@@ -536,6 +561,79 @@ async def test_webhook_direct_receiver_accepts_marker_without_application(
     assert "#max" not in payload.text
 
 
+@pytest.mark.parametrize(
+    ("status", "expected_status"),
+    [
+        ("sent", 200),
+        ("pending", 503),
+    ],
+)
+@pytest.mark.asyncio
+async def test_webhook_direct_receiver_accepts_edited_marker_without_application(
+    settings_factory,
+    status: str,
+    expected_status: int,
+):
+    from tg_max_bridge.webhook import TelegramWebhook
+
+    dispatcher = FakeDispatcher(statuses=[status])
+    outbox = RecordingOutbox(status=status)
+    webhook = TelegramWebhook(
+        settings=_settings(
+            settings_factory,
+            telegram_webhook_auto_register=False,
+            telegram_ack_mode="never",
+        ),
+        application=None,
+        dispatcher=dispatcher,
+        outbox=outbox,
+        max_body_size=1024,
+    )
+
+    response = await webhook.handle_update(FakeRequest(body=_edited_marker_update()))
+
+    assert response.status == expected_status
+    assert dispatcher.calls == 0
+    assert len(outbox.enqueued) == 1
+    source, payload = outbox.enqueued[0]
+    assert source.chat_id == -100111222333
+    assert source.message_id == 790
+    assert source.trigger_message_id == 790
+    assert source.from_user_id == 777
+    assert source.text == "Meet at entrance B"
+    assert "Meet at entrance B" in payload.text
+    assert "#max" not in payload.text
+
+
+@pytest.mark.asyncio
+async def test_webhook_direct_receiver_ignores_edited_message_without_marker(
+    settings_factory,
+):
+    from tg_max_bridge.webhook import TelegramWebhook
+
+    dispatcher = FakeDispatcher(statuses=[])
+    outbox = RecordingOutbox(status="pending")
+    webhook = TelegramWebhook(
+        settings=_settings(
+            settings_factory,
+            telegram_webhook_auto_register=False,
+            telegram_ack_mode="never",
+        ),
+        application=None,
+        dispatcher=dispatcher,
+        outbox=outbox,
+        max_body_size=1024,
+    )
+
+    response = await webhook.handle_update(
+        FakeRequest(body=_edited_marker_update(text="ordinary edited message"))
+    )
+
+    assert response.status == 200
+    assert dispatcher.calls == 0
+    assert outbox.enqueued == []
+
+
 @pytest.mark.asyncio
 async def test_webhook_direct_receiver_dedupes_through_outbox(settings_factory):
     from tg_max_bridge.webhook import TelegramWebhook
@@ -602,6 +700,60 @@ async def test_webhook_repeated_delivery_is_deduped_in_persistent_outbox(
         assert rows[0]["tg_message_id"] == 123
         assert rows[0]["tg_trigger_message_id"] == 456
         assert rows[0]["status"] == "pending"
+        assert dispatcher.calls == 0
+    finally:
+        await conn.close()
+
+
+@pytest.mark.asyncio
+async def test_webhook_original_marker_then_edited_marker_share_one_outbox_row(
+    settings_factory,
+    tmp_path,
+):
+    from conftest import build_outbox_repository
+
+    from tg_max_bridge.webhook import TelegramWebhook
+
+    outbox, conn = await build_outbox_repository(tmp_path)
+    dispatcher = FakeDispatcher(statuses=["pending"])
+    webhook = TelegramWebhook(
+        settings=_settings(
+            settings_factory,
+            telegram_webhook_auto_register=False,
+            telegram_ack_mode="never",
+        ),
+        application=None,
+        dispatcher=dispatcher,
+        outbox=outbox,
+        max_body_size=1024,
+    )
+    try:
+        first = await webhook.handle_update(FakeRequest(body=_marker_update()))
+        second = await webhook.handle_update(
+            FakeRequest(
+                body=_edited_marker_update(
+                    update_id=1005,
+                    message_id=790,
+                    text="Meet at entrance B, bring badges #max",
+                )
+            )
+        )
+
+        rows = await conn.execute_fetchall(
+            """
+            SELECT tg_chat_id, tg_message_id, tg_trigger_message_id, status,
+                   source_text
+            FROM outbox
+            """
+        )
+
+        assert [first.status, second.status] == [503, 503]
+        assert len(rows) == 1
+        assert rows[0]["tg_chat_id"] == -100111222333
+        assert rows[0]["tg_message_id"] == 790
+        assert rows[0]["tg_trigger_message_id"] == 790
+        assert rows[0]["status"] == "pending"
+        assert rows[0]["source_text"] == "Meet at entrance B"
         assert dispatcher.calls == 0
     finally:
         await conn.close()

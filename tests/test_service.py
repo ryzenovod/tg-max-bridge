@@ -273,6 +273,58 @@ async def test_service_starts_polling_without_transport_probe(
 
 
 @pytest.mark.asyncio
+async def test_run_polling_requests_forward_allowed_updates(
+    monkeypatch,
+    settings_factory,
+):
+    import telegram.ext
+
+    from tg_max_bridge import service
+    from tg_max_bridge.telegram_bot import FORWARD_ALLOWED_UPDATES
+
+    calls: dict[str, Any] = {}
+    stop = asyncio.Event()
+
+    class FakeUpdater:
+        async def start_polling(self, **kwargs: Any) -> None:
+            calls["start_polling"] = kwargs
+            stop.set()
+
+        async def stop(self) -> None:
+            calls["updater_stopped"] = True
+
+    class FakeApplication:
+        def __init__(self) -> None:
+            self.updater = FakeUpdater()
+
+        async def __aenter__(self) -> FakeApplication:
+            calls["entered"] = True
+            return self
+
+        async def __aexit__(self, exc_type: object, exc: object, tb: object) -> None:
+            calls["exited"] = True
+
+        async def start(self) -> None:
+            calls["application_started"] = True
+
+        async def stop(self) -> None:
+            calls["application_stopped"] = True
+
+    monkeypatch.setattr(telegram.ext, "Application", FakeApplication)
+
+    await service._run_polling(FakeApplication(), settings_factory(), stop)
+
+    assert calls["start_polling"] == {
+        "timeout": 30,
+        "allowed_updates": list(FORWARD_ALLOWED_UPDATES),
+        "drop_pending_updates": False,
+    }
+    assert calls["updater_stopped"] is True
+    assert calls["application_stopped"] is True
+    assert calls["exited"] is True
+
+
+@pytest.mark.asyncio
 async def test_service_stops_polling_and_closes_db_when_dispatcher_fails(
     monkeypatch,
     settings_factory,

@@ -15,7 +15,12 @@ from .dispatcher import Dispatcher
 from .formatting import UnsupportedMessageError, build_max_payload
 from .models import OutboxStatus, RejectReason, TelegramSourceMessage
 from .outbox import OutboxRepository
-from .telegram_bot import TelegramApplication, extract_marker_trigger, extract_trigger
+from .telegram_bot import (
+    FORWARD_ALLOWED_UPDATES,
+    TelegramApplication,
+    extract_marker_trigger,
+    extract_trigger,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -122,7 +127,7 @@ class TelegramWebhook:
         await self._application.bot.set_webhook(
             url=self._settings.telegram_webhook_url,
             secret_token=self._secret.get_secret_value(),
-            allowed_updates=["message"],
+            allowed_updates=list(FORWARD_ALLOWED_UPDATES),
             drop_pending_updates=False,
         )
 
